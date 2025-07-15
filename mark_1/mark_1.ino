@@ -31,6 +31,11 @@ const char* apiURL = "https://telemetria-fvv4.onrender.com/cercas";
 unsigned long ultimaAtualizacao = 0;
 const unsigned long intervaloAtualizacao = 5 * 60 * 1000; // 5 minutos
 
+// Para evitar verificações de cerca a cada segundo
+unsigned long ultimaVerificacaoCercas = 0;
+const unsigned long intervaloVerificacaoCercas = 10000; // 10 segundos
+
+
 void setup() {
   Serial.begin(115200);
   gpsSerial.begin(9600);
@@ -103,15 +108,17 @@ void loop() {
   while (gpsSerial.available()) {
     gps.encode(gpsSerial.read());
 
-    if (gps.location.isUpdated()) {
-      float lat = gps.location.lat();
-      float lng = gps.location.lng();
+  if (gps.location.isUpdated()) {
+    float lat = gps.location.lat();
+    float lng = gps.location.lng();
 
-      Serial.print("Lat: "); Serial.println(lat, 6);
-      Serial.print("Lng: "); Serial.println(lng, 6);
+    Serial.print("Lat: "); Serial.println(lat, 6);
+    Serial.print("Lng: "); Serial.println(lng, 6);
 
-      verificarCercas(lat, lng);
-    }
+    verificarCercas(lat, lng);
+  }
+
+
   }
 }
 
@@ -124,6 +131,8 @@ void atualizarCercas() {
     https.addHeader("User-Agent", "ESP8266");
     https.addHeader("Accept", "application/json");
     https.addHeader("Accept-Encoding", "identity");
+    https.setTimeout(10000); // 10 segundos de espera de resposta da API
+
 
     int httpCode = https.GET();
     if (httpCode == 200) {
@@ -159,26 +168,19 @@ void atualizarCercas() {
         temp.close();
         Serial.println("✅ Arquivo temporário salvo com sucesso!");
 
-        // Agora validamos o JSON do arquivo temporário
-        File tempFile = SD.open("/temp_cercas.json");
-        StaticJsonDocument<8192> doc;
-        DeserializationError err = deserializeJson(doc, tempFile);
-        tempFile.close();
+        if (validarEstruturaJSON("/temp_cercas.json")) {
+          Serial.println("✅ JSON parece válido! Substituindo arquivo oficial...");
 
-        if (!err) {
-          Serial.println("✅ JSON válido! Substituindo arquivo oficial...");
+          if (SD.exists("/cercas.json")) {
+            SD.remove("/cercas.json");
+          }
 
-        if (SD.exists("/cercas.json")) {
-          SD.remove("/cercas.json");
-        }
-
-        SD.rename("/temp_cercas.json", "/cercas.json");
-        Serial.println("📝 Substituição concluída.");
+          SD.rename("/temp_cercas.json", "/cercas.json");
+          Serial.println("📝 Substituição concluída.");
         } else {
-          Serial.print("⚠️ JSON inválido: ");
-          Serial.println(err.c_str());
-          Serial.println("❌ Mantendo o arquivo antigo. Temporário será mantido para análise.");
+          Serial.println("⚠️ JSON inválido (estrutura incompleta). Mantendo arquivo antigo.");
         }
+
     } else {
       Serial.println("❌ Erro ao abrir arquivo temporário para escrita.");
     }
@@ -190,6 +192,36 @@ void atualizarCercas() {
   }
 }
 
+bool validarEstruturaJSON(const char* path) {
+  File file = SD.open(path);
+  if (!file) {
+    Serial.println("❌ Não foi possível abrir o arquivo para validação.");
+    return false;
+  }
+
+  int chaves = 0;  // Conta { e }
+  int colchetes = 0;  // Conta [ e ]
+
+  while (file.available()) {
+    char c = file.read();
+    if (c == '{') chaves++;
+    else if (c == '}') chaves--;
+    else if (c == '[') colchetes++;
+    else if (c == ']') colchetes--;
+
+    // Se em algum momento as contagens ficarem negativas, já está errado
+    if (chaves < 0 || colchetes < 0) {
+      file.close();
+      return false;
+    }
+  }
+
+  file.close();
+
+  return (chaves == 0 && colchetes == 0);  // JSON bem balanceado
+}
+
+
 void verificarCercas(float lat, float lng) {
   File file = SD.open("/cercas.json");
   if (!file) {
@@ -197,17 +229,30 @@ void verificarCercas(float lat, float lng) {
     return;
   }
 
-  StaticJsonDocument<8192> doc;
-  DeserializationError err = deserializeJson(doc, file);
-  file.close();
+  // Verifica se o JSON começa com [
+  char c;
+  do {
+    c = file.read();
+  } while (c != -1 && isspace(c)); // ignora espaços
 
-  if (err) {
-    Serial.print("Erro ao parsear JSON: ");
-    Serial.println(err.c_str());
+  if (c != '[') {
+    Serial.println("Formato inválido: JSON não começa com [");
+    file.close();
     return;
   }
 
-  for (JsonObject cerca : doc.as<JsonArray>()) {
+  StaticJsonDocument<2048> doc;
+  bool dentro = false;
+
+  while (file.available()) {
+    DeserializationError err = deserializeJson(doc, file);
+    if (err) {
+      Serial.print("Erro ao parsear objeto JSON: ");
+      Serial.println(err.c_str());
+      break;
+    }
+
+    JsonObject cerca = doc.as<JsonObject>();
     const char* nome = cerca["nome"];
     const char* velMax = cerca["velocidade_max"];
     JsonArray coords = cerca["coordenadas"];
@@ -225,10 +270,38 @@ void verificarCercas(float lat, float lng) {
       lcd.print("Limite: ");
       lcd.print(velMax);
       lcd.print("km/h");
-      break;
+
+      dentro = true;
+      break;  // já encontrou uma cerca, para aqui
     }
+
+    // Avança até o próximo objeto (descarta vírgulas e espaços)
+    while (file.available()) {
+      char next = file.peek();
+      if (next == ',') {
+        file.read(); // consome vírgula
+        break;
+      } else if (isspace(next)) {
+        file.read(); // consome espaço
+      } else if (next == ']') {
+        file.read(); // fim do array
+        break;
+      } else {
+        break;
+      }
+    }
+
+    doc.clear(); // limpa doc para o próximo objeto
+  }
+
+  file.close();
+
+  if (!dentro) {
+    Serial.println("📭 Fora de qualquer cerca.");
   }
 }
+
+
 
 bool dentroDoPoligono(float x, float y, JsonArray coords) {
   int i, j, n = coords.size();
