@@ -247,7 +247,11 @@ void verificarCercas(float lat, float lng) {
   }
 
   StaticJsonDocument<2048> doc;
-  bool dentro = false;
+  bool encontrouAlguma = false;
+
+  int menorVelMax = 999;         // Inicializa com valor alto
+  int menorVelChuva = 999;
+  const char* nomeMaisRestrito = nullptr;
 
   while (file.available()) {
     DeserializationError err = deserializeJson(doc, file);
@@ -259,33 +263,29 @@ void verificarCercas(float lat, float lng) {
 
     JsonObject cerca = doc.as<JsonObject>();
     const char* nome = cerca["nome"];
-    const char* velMax = cerca["velocidade_max"];
-    const char* velMaxChuva = cerca["velocidade_chuva"];
+    Serial.print("Verificando: ");
+    Serial.println(nome);
+    const char* velMaxStr = cerca["velocidade_max"];
+    const char* velChuvaStr = cerca["velocidade_chuva"];
     JsonArray coords = cerca["coordenadas"];
 
     if (dentroDoPoligono(lat, lng, coords)) {
+      int vel = atoi(velMaxStr);
+      int velChuva = atoi(velChuvaStr);
+
       Serial.println("🛑 Dentro de uma cerca:");
       Serial.print("📍 Nome: "); Serial.println(nome);
-      Serial.print("🚗 Limite: "); Serial.print(velMax); Serial.println(" km/h");
+      Serial.print("🚗 Limite: "); Serial.print(vel); Serial.println(" km/h");
 
-      //guarda esse valores como inteiros na varivável global definida do inicio
-      vel_max = atoi(velMax);
-      vel_max_chuva = atoi(velMaxChuva);
-
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print(String(nome).substring(0, 16));
-
-      lcd.setCursor(0, 1);
-      lcd.print("Limite: ");
-      lcd.print(velMax);
-      lcd.print("km/h");
-
-      dentro = true;
-      break;  // já encontrou uma cerca, para aqui
+      if (vel < menorVelMax) {
+        menorVelMax = vel;
+        menorVelChuva = velChuva;
+        nomeMaisRestrito = nome;
+        encontrouAlguma = true;
+      }
     }
 
-    // Avança até o próximo objeto (descarta vírgulas e espaços)
+    bool terminou = false;
     while (file.available()) {
       char next = file.peek();
       if (next == ',') {
@@ -295,23 +295,39 @@ void verificarCercas(float lat, float lng) {
         file.read(); // consome espaço
       } else if (next == ']') {
         file.read(); // fim do array
+        terminou = true;
         break;
       } else {
         break;
       }
     }
 
-    doc.clear(); // limpa doc para o próximo objeto
+    if (terminou) break;
+
+    doc.clear(); // limpa doc para o próximo
   }
 
   file.close();
 
-  if (!dentro) {
+  if (encontrouAlguma) {
+    vel_max = menorVelMax;
+    vel_max_chuva = menorVelChuva;
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(String(nomeMaisRestrito).substring(0, 16));
+
+    lcd.setCursor(0, 1);
+    lcd.print("Limite: ");
+    lcd.print(vel_max);
+    lcd.print("km/h");
+  } else {
     Serial.println("📭 Fora de qualquer cerca.");
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Fora de qualquer cerca");
   }
 }
-
-
 
 bool dentroDoPoligono(float x, float y, JsonArray coords) {
   int i, j, n = coords.size();
