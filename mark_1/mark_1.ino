@@ -33,8 +33,11 @@ const unsigned long intervaloAtualizacao = 5 * 60 * 1000; // 5 minutos
 
 // Para evitar verificações de cerca a cada segundo
 unsigned long ultimaVerificacaoCercas = 0;
-const unsigned long intervaloVerificacaoCercas = 10000; // 10 segundos
+const unsigned long intervaloVerificacaoCercas = 5000; // 5 segundos
 
+//valores de velocidade para uso futuro
+int vel_max;
+int vel_max_chuva;
 
 void setup() {
   Serial.begin(115200);
@@ -112,12 +115,14 @@ void loop() {
     float lat = gps.location.lat();
     float lng = gps.location.lng();
 
-    Serial.print("Lat: "); Serial.println(lat, 6);
-    Serial.print("Lng: "); Serial.println(lng, 6);
-
-    verificarCercas(lat, lng);
+    // ✅ Verifica a cada 5 segundos
+    if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
+      Serial.print("Lat: "); Serial.println(lat, 6);
+      Serial.print("Lng: "); Serial.println(lng, 6);
+      ultimaVerificacaoCercas = millis(); // atualiza o último tempo
+      verificarCercas(lat, lng);
+    }
   }
-
 
   }
 }
@@ -255,12 +260,17 @@ void verificarCercas(float lat, float lng) {
     JsonObject cerca = doc.as<JsonObject>();
     const char* nome = cerca["nome"];
     const char* velMax = cerca["velocidade_max"];
+    const char* velMaxChuva = cerca["velocidade_chuva"];
     JsonArray coords = cerca["coordenadas"];
 
     if (dentroDoPoligono(lat, lng, coords)) {
       Serial.println("🛑 Dentro de uma cerca:");
       Serial.print("📍 Nome: "); Serial.println(nome);
       Serial.print("🚗 Limite: "); Serial.print(velMax); Serial.println(" km/h");
+
+      //guarda esse valores como inteiros na varivável global definida do inicio
+      vel_max = atoi(velMax);
+      vel_max_chuva = atoi(velMaxChuva);
 
       lcd.clear();
       lcd.setCursor(0, 0);
