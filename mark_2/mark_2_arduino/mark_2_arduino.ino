@@ -2,15 +2,20 @@
 #include <LiquidCrystal_I2C.h>
 #include <SoftwareSerial.h>
 
-SoftwareSerial espSerial(3, 4); // RX = D3, TX = D4 (ESP TX → D3)
+// RX do Arduino (D3) ← TX do ESP8266 | TX do Arduino (D4) → RX do ESP8266 (com divisor de tensão!)
+SoftwareSerial espSerial(3, 4);
+
+// Endereço I2C 0x27, LCD 16x2
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 void setup() {
   espSerial.begin(115200);
   Serial.begin(115200);
-  lcd.begin(16, 2);
-  lcd.backlight();
+
+  lcd.init();            // Inicializa usando a lib correta
+  lcd.backlight();       // Liga a luz de fundo
   lcd.clear();
+  lcd.setCursor(0, 0);
   lcd.print("LCD Iniciado.");
 }
 
@@ -23,14 +28,14 @@ void loop() {
 
     if (c == '\n') {
       if (buffer.startsWith("[LCD]")) {
-        String texto = buffer.substring(5);
+        String texto = buffer.substring(5); // Remove o prefixo "[LCD]"
         Serial.print(texto);
         lcd.clear();
         lcd.setCursor(0, 0);
-        lcd.print(texto.substring(0, 16));
+        lcd.print(texto.substring(0, 16)); // Primeira linha
         if (texto.length() > 16) {
           lcd.setCursor(0, 1);
-          lcd.print(texto.substring(16, 32));
+          lcd.print(texto.substring(16, 32)); // Segunda linha
         }
       }
       buffer = "";
