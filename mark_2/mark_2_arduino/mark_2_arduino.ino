@@ -15,8 +15,7 @@ void setup() {
   lcd.init();            // Inicializa usando a lib correta
   lcd.backlight();       // Liga a luz de fundo
   lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("LCD Iniciado.");
+  lcd.setCursor(0, 0);.
 }
 
 void loop() {
@@ -27,8 +26,11 @@ void loop() {
     buffer += c;
 
     if (c == '\n') {
-      if (buffer.startsWith("[LCD]")) {
-        String texto = buffer.substring(5); // Remove o prefixo "[LCD]"
+      int inicio = buffer.indexOf("[LCD]");
+      int fim = buffer.lastIndexOf("[LCD]");
+
+      if (inicio != -1 && fim != -1 && fim > inicio) {
+        String texto = buffer.substring(inicio + 5, fim); // Extrai só o que está entre os dois [LCD]
         Serial.print(texto);
         lcd.clear();
         lcd.setCursor(0, 0);
@@ -38,7 +40,8 @@ void loop() {
           lcd.print(texto.substring(16, 32)); // Segunda linha
         }
       }
-      buffer = "";
+
+      buffer = ""; // Limpa o buffer mesmo se a estrutura estiver incorreta
     }
   }
 }

@@ -30,9 +30,21 @@ TinyGPSPlus gps;
 // bool cartaoDetectado = false;
 
 // === Wi-Fi e API ===
-const char* ssid = "Duarte_Fotos";
-const char* password = "05519558213";
+// === Redes Wi-Fi disponíveis ===
+
 const char* apiURL = "https://telemetria-fvv4.onrender.com/cercas";
+
+struct RedeWiFi {
+  const char* ssid;
+  const char* password;
+};
+
+// Adicione ou remova redes facilmente aqui:
+RedeWiFi redesWiFi[] = {
+  {"Duarte_Fotos", "05519558213"},
+  {"OutraRede", "senha12345"}
+};
+const int numRedes = sizeof(redesWiFi) / sizeof(redesWiFi[0]);
 
 // === Atualização periódica ===
 unsigned long ultimaAtualizacao = 0;
@@ -45,6 +57,11 @@ const unsigned long intervaloVerificacaoCercas = 5000; // 5 segundos
 //valores de velocidade para uso futuro
 int vel_max;
 int vel_max_chuva;
+
+void lcdPrint(String texto);
+void atualizarCercas();
+void verificarCercas(float latitude, float longitude);
+bool tentarConectarWiFi(int tempoLimiteMs = 10000);
 
 void setup() {
   Serial.begin(115200);
@@ -62,18 +79,12 @@ void setup() {
   SPI.begin();
 
   Serial.println("Conectando ao Wi-Fi...");
-  WiFi.begin(ssid, password);
-  
-  unsigned long inicioWifi = millis(); //para impedir uma tentativa de conexão eterna
-  while (WiFi.status() != WL_CONNECTED && millis() - inicioWifi < 10000) {
-    delay(500);
-    Serial.print(".");
-  }
+  bool conectado = tentarConectarWiFi();
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWi-Fi conectado!");
+  if (conectado) {
+    Serial.println("📶 Wi-Fi conectado.");
   } else {
-    Serial.println("\n⚠️ Wi-Fi não disponível. Usando dados locais.");
+    Serial.println("⚠️ Nenhuma rede disponível. Usando dados locais.");
   }
 
   if (!SD.begin(SD_CS)) {
@@ -93,22 +104,19 @@ void loop() {
   if (millis() - ultimaAtualizacao > intervaloAtualizacao) {
     if (WiFi.status() != WL_CONNECTED) {
       Serial.println("🔌 Wi-Fi não conectado. Tentando reconectar...");
-      WiFi.begin(ssid, password);
-      unsigned long inicio = millis();
-      while (WiFi.status() != WL_CONNECTED && millis() - inicio < 10000) {
-        delay(500);
-        Serial.print(".");
-      }
-      if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\n✅ Reconectado ao Wi-Fi!");
+
+      bool reconectado = tentarConectarWiFi();
+      if (reconectado) {
+        Serial.println("✅ Reconectado ao Wi-Fi!");
       } else {
-        Serial.println("\n❌ Falha ao reconectar.");
+        Serial.println("❌ Falha ao reconectar.");
       }
     }
 
     if (WiFi.status() == WL_CONNECTED) {
       atualizarCercas();
     }
+
     ultimaAtualizacao = millis();
   }
 
@@ -129,10 +137,33 @@ void loop() {
   }
 }
 
-void lcdPrint(String texto) {
-  Serial.println("[LCD]" + texto);  // envia comando para o Arduino
+
+bool tentarConectarWiFi(int tempoLimiteMs) {
+  for (int i = 0; i < numRedes; i++) {
+    Serial.print("Tentando conectar em: ");
+    Serial.println(redesWiFi[i].ssid);
+    WiFi.begin(redesWiFi[i].ssid, redesWiFi[i].password);
+
+    unsigned long inicio = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - inicio < tempoLimiteMs) {
+      delay(500);
+      Serial.print(".");
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\n✅ Conectado à rede: " + String(redesWiFi[i].ssid));
+      return true;
+    } else {
+      Serial.println("\n❌ Falha na conexão com: " + String(redesWiFi[i].ssid));
+    }
+  }
+
+  return false;
 }
 
+void lcdPrint(String texto) {
+  Serial.println("[LCD]" + texto + "[LCD]");  // envia comando para o Arduino
+}
 
 // void lcdPrint(String textoLcd) {
 //   lcd.clear();
