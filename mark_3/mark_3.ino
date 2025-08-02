@@ -9,9 +9,10 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <MFRC522.h>
 
 // === Cartão SD ===
-#define SD_CS 13
+#define SD_CS 33
 
 // === GPS ===
 #define RX_GPS 16
@@ -36,6 +37,44 @@ const unsigned long intervaloVerificacaoCercas = 5000; // 5 segundos
 int vel_max;
 int vel_max_chuva;
 
+// === RFID ===
+#define RST_PIN 27
+#define SS_PIN_RFID 15
+
+MFRC522 mfrc522(SS_PIN_RFID, RST_PIN);
+SPIClass spiRFID(VSPI);  // VSPI para RFID
+
+// SPIClass para SD no HSPI
+SPIClass spiSD(HSPI);
+
+void taskRFID(void* parameter) {
+  for (;;) {
+    if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+      Serial.print("🔍 UID lido: ");
+      String uid = "";
+      for (byte i = 0; i < mfrc522.uid.size; i++) {
+        Serial.print(mfrc522.uid.uidByte[i] < 0x10 ? "0" : "");
+        Serial.print(mfrc522.uid.uidByte[i], HEX);
+        uid += String(mfrc522.uid.uidByte[i], HEX);
+      }
+      Serial.println();
+
+      // Exemplo: salvar UID no SD
+      File file = SD.open("/uids.txt", FILE_APPEND);
+      if (file) {
+        file.println(uid);
+        file.close();
+        Serial.println("UID salvo no SD.");
+      } else {
+        Serial.println("Erro ao salvar UID no SD.");
+      }
+
+      mfrc522.PICC_HaltA();
+    }
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   gpsSerial.begin(9600, SERIAL_8N1, RX_GPS, TX_GPS);
@@ -47,6 +86,21 @@ void setup() {
   lcd.begin(16, 2);
   lcd.backlight();
   lcd.clear();
+  lcd.print("Iniciando...");
+
+    // Iniciar SPI
+    SPI.begin(14, 12, 13, SS_PIN_RFID);
+    mfrc522.PCD_Init();
+
+  xTaskCreatePinnedToCore(
+    taskRFID,     // Função da tarefa
+    "RFID Reader",// Nome da tarefa
+    4096,         // Tamanho da stack
+    NULL,         // Parâmetro
+    1,            // Prioridade
+    NULL,         // Handle da tarefa
+    0             // Core 0 (o loop() roda no Core 1)
+  );
 
   Serial.println("Conectando ao Wi-Fi...");
   WiFi.begin(ssid, password);
@@ -58,10 +112,17 @@ void setup() {
 
   Serial.println(WiFi.status() == WL_CONNECTED ? "\nWi-Fi conectado!" : "\n⚠️ Wi-Fi não disponível. Usando dados locais.");
 
-  if (!SD.begin(SD_CS)) {
-    Serial.println("❌ Falha ao iniciar o cartão SD!");
-    return;
+  // Inicia SD no HSPI (pinos 25,26,21,33)
+  spiSD.begin(25, 26, 21, SD_CS);
+  if (!SD.begin(SD_CS, spiSD)) {
+    Serial.println("❌ Falha ao iniciar cartão SD");
+    lcd.begin(16, 2);
+    lcd.backlight();
+    lcd.clear();
+    lcd.print("Falha no SD!");
+    while(true) delay(1000); // trava se falhar no SD
   }
+  Serial.println("✅ Cartão SD iniciado");
 
   if (WiFi.status() == WL_CONNECTED) {
     atualizarCercas();
