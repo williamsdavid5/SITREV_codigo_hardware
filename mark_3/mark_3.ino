@@ -47,40 +47,50 @@ SPIClass spiRFID(VSPI);  // VSPI para RFID
 // SPIClass para SD no HSPI
 SPIClass spiSD(HSPI);
 
+#define LED_PIN 2  // LED embutido do ESP32
+
 void taskRFID(void* parameter) {
+  bool cartaoPresente = false;
+
   for (;;) {
     if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
-      Serial.print("🔍 UID lido: ");
+      if (!cartaoPresente) {
+        digitalWrite(LED_PIN, HIGH);  // Acende LED
+        cartaoPresente = true;
+      }
+
       String uid = "";
+      Serial.print("🔍 UID lido: ");
       for (byte i = 0; i < mfrc522.uid.size; i++) {
-        Serial.print(mfrc522.uid.uidByte[i] < 0x10 ? "0" : "");
-        Serial.print(mfrc522.uid.uidByte[i], HEX);
+        if (mfrc522.uid.uidByte[i] < 0x10) {
+          uid += "0";
+        }
         uid += String(mfrc522.uid.uidByte[i], HEX);
       }
-      Serial.println();
 
-      // Exemplo: salvar UID no SD
-      File file = SD.open("/uids.txt", FILE_APPEND);
-      if (file) {
-        file.println(uid);
-        file.close();
-        Serial.println("UID salvo no SD.");
-      } else {
-        Serial.println("Erro ao salvar UID no SD.");
-      }
+      uid.toUpperCase();
+      Serial.println(uid);
 
       mfrc522.PICC_HaltA();
+    } else {
+      if (cartaoPresente) {
+        digitalWrite(LED_PIN, LOW);
+        cartaoPresente = false;
+      }
     }
-    vTaskDelay(500 / portTICK_PERIOD_MS);
+
+    vTaskDelay(200 / portTICK_PERIOD_MS);
   }
 }
 
+
 void setup() {
   Serial.begin(115200);
-  gpsSerial.begin(9600, SERIAL_8N1, RX_GPS, TX_GPS);
 
-  pinMode(2, OUTPUT);
-  digitalWrite(2, 0);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+
+  gpsSerial.begin(9600, SERIAL_8N1, RX_GPS, TX_GPS);
 
   Wire.begin(4, 5);
   lcd.begin(16, 2);
