@@ -54,6 +54,9 @@ SPIClass spiSD(HSPI);
 boolean lcdFlag = false; //flag para controlar a impressão no lcd
 //ajuda a impedir impressão constante desnecessária
 
+StaticJsonDocument<512> motoristaAtual;
+bool motoristaEncontrado = false;
+
 #define LED_PIN 2  // LED embutido do ESP32
 
 void taskRFID(void* parameter) {
@@ -81,6 +84,8 @@ void taskRFID(void* parameter) {
 
       rfidValor = uid;
       rfidLido = !rfidLido;
+
+      verificarMotoristaPorRFID();
 
       mfrc522.PICC_HaltA();
     } else {
@@ -181,9 +186,12 @@ void loop() {
   if (rfidLido) {
 
     if (rfidLido && lcdFlag) {
+      delay(50);
       lcd.clear();
       lcd.setCursor(0, 0);
-      lcd.print("Bem vindo");
+      lcd.print("Bem vindo(a)");
+      lcd.setCursor(0, 1);
+      lcd.print(motoristaAtual["nome"].as<const char*>());
 
       delay(5000);
 
@@ -206,15 +214,13 @@ void loop() {
       }
     }
   } else {
-
     if (!lcdFlag) {
       lcd.clear();
       lcd.setCursor(0, 0);
-      lcd.print("Pronto!");
+      lcd.print("Inicie a Viagem");
       lcdFlag = true;
     }
   }
-
 }
 
 void atualizarCercas() {
@@ -352,6 +358,77 @@ void atualizarMotoristas() {
     Serial.println("❌ Erro ao iniciar conexão com motoristas.");
   }
 }
+
+void verificarMotoristaPorRFID() {
+  File file = SD.open("/motoristas.json");
+  if (!file) {
+    Serial.println("❌ Falha ao abrir motoristas.json");
+    motoristaEncontrado = false;
+    return;
+  }
+
+  char c;
+  do {
+    c = file.read();
+  } while (c != -1 && isspace(c));
+
+  if (c != '[') {
+    Serial.println("Formato inválido em motoristas.json");
+    file.close();
+    motoristaEncontrado = false;
+    return;
+  }
+
+  StaticJsonDocument<512> doc;
+
+  while (file.available()) {
+    DeserializationError err = deserializeJson(doc, file);
+    if (err) {
+      Serial.print("Erro ao ler motorista: ");
+      Serial.println(err.c_str());
+      break;
+    }
+
+    JsonObject motorista = doc.as<JsonObject>();
+    const char* rfid = motorista["cartao_rfid"];
+
+    if (rfidValor.equalsIgnoreCase(rfid)) {
+      motoristaAtual.clear();
+      motoristaAtual.set(motorista);
+      motoristaEncontrado = true;
+      Serial.println("✅ Motorista encontrado:");
+      Serial.print("  Nome: "); Serial.println(motorista["nome"].as<const char*>());
+      break;
+    }
+
+    bool fim = false;
+    while (file.available()) {
+      char next = file.peek();
+      if (next == ',') {
+        file.read();
+        break;
+      } else if (isspace(next)) {
+        file.read();
+      } else if (next == ']') {
+        file.read();
+        fim = true;
+        break;
+      } else {
+        break;
+      }
+    }
+
+    if (fim) break;
+    doc.clear();
+  }
+
+  file.close();
+
+  if (!motoristaEncontrado) {
+    Serial.println("❌ Nenhum motorista com esse RFID.");
+  }
+}
+
 
 // void imprimirMotoristas() {
 //   File file = SD.open("/motoristas.json");
