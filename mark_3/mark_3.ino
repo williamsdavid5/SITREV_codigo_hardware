@@ -27,6 +27,7 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 const char* ssid = "Duarte_Fotos";
 const char* password = "05519558213";
 const char* apiURL = "https://telemetria-fvv4.onrender.com/cercas";
+const char* apiMotoristas = "https://telemetria-fvv4.onrender.com/motoristas/limpo";
 
 // === Atualização periódica ===
 unsigned long ultimaAtualizacao = 0;
@@ -98,9 +99,9 @@ void setup() {
   lcd.clear();
   lcd.print("Iniciando...");
 
-    // Iniciar SPI
-    SPI.begin(14, 12, 13, SS_PIN_RFID);
-    mfrc522.PCD_Init();
+  // Iniciar SPI
+  SPI.begin(14, 12, 13, SS_PIN_RFID);
+  mfrc522.PCD_Init();
 
   xTaskCreatePinnedToCore(
     taskRFID,     // Função da tarefa
@@ -136,6 +137,7 @@ void setup() {
 
   if (WiFi.status() == WL_CONNECTED) {
     atualizarCercas();
+    atualizarMotoristas();
   }
 
   lcd.setCursor(0, 0);
@@ -157,6 +159,7 @@ void loop() {
 
     if (WiFi.status() == WL_CONNECTED) {
       atualizarCercas();
+      atualizarMotoristas();
     }
 
     ultimaAtualizacao = millis();
@@ -248,6 +251,133 @@ void atualizarCercas() {
     Serial.println("❌ Erro ao iniciar conexão HTTPS.");
   }
 }
+
+void atualizarMotoristas() {
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient https;
+
+  if (https.begin(client, apiMotoristas)) {
+    https.addHeader("User-Agent", "ESP8266");
+    https.addHeader("Accept", "application/json");
+    https.addHeader("Accept-Encoding", "identity");
+    https.setTimeout(10000);
+
+    int httpCode = https.GET();
+    if (httpCode == 200) {
+      Serial.println("🔄 Baixando motoristas...");
+
+      File temp = SD.open("/temp_motoristas.json", FILE_WRITE);
+      if (temp) {
+        WiFiClient& stream = https.getStream();
+        unsigned long inicio = millis();
+        const unsigned long tempoLimite = 10000;
+        bool iniciouJson = false;
+
+        while ((millis() - inicio) < tempoLimite) {
+          if (stream.available()) {
+            char c = stream.read();
+            if (!iniciouJson) {
+              if (c == '[' || c == '{') {
+                iniciouJson = true;
+                temp.write(c);
+              }
+            } else {
+              temp.write(c);
+            }
+            inicio = millis();
+          }
+        }
+
+        temp.flush();
+        temp.close();
+        Serial.println("✅ Motoristas temporários salvos.");
+
+        if (validarEstruturaJSON("/temp_motoristas.json")) {
+          Serial.println("🧾 JSON de motoristas válido.");
+
+          if (SD.exists("/motoristas.json")) {
+            SD.remove("/motoristas.json");
+          }
+          SD.rename("/temp_motoristas.json", "/motoristas.json");
+          Serial.println("📦 motoristas.json atualizado com sucesso.");
+        } else {
+          Serial.println("❌ JSON de motoristas inválido.");
+        }
+
+      } else {
+        Serial.println("❌ Erro ao abrir temp_motoristas.json.");
+      }
+    } else {
+      Serial.printf("Erro HTTP: %d\n", httpCode);
+    }
+
+    https.end();
+  } else {
+    Serial.println("❌ Erro ao iniciar conexão com motoristas.");
+  }
+}
+
+// void imprimirMotoristas() {
+//   File file = SD.open("/motoristas.json");
+//   if (!file) {
+//     Serial.println("❌ Não foi possível abrir motoristas.json");
+//     return;
+//   }
+
+//   char c;
+//   do {
+//     c = file.read();
+//   } while (c != -1 && isspace(c));
+
+//   if (c != '[') {
+//     Serial.println("Formato inválido em motoristas.json");
+//     file.close();
+//     return;
+//   }
+
+//   StaticJsonDocument<1024> doc;
+
+//   while (file.available()) {
+//     DeserializationError err = deserializeJson(doc, file);
+//     if (err) {
+//       Serial.print("Erro ao parsear motorista: ");
+//       Serial.println(err.c_str());
+//       break;
+//     }
+
+//     JsonObject motorista = doc.as<JsonObject>();
+//     Serial.println("👤 Motorista:");
+//     Serial.print("  ID: "); Serial.println(motorista["id"].as<int>());
+//     Serial.print("  Nome: "); Serial.println(motorista["nome"].as<const char*>());
+//     Serial.print("  Cartão RFID: "); Serial.println(motorista["cartao_rfid"].as<const char*>());
+//     Serial.println("------");
+
+//     // avança para o próximo
+//     bool fim = false;
+//     while (file.available()) {
+//       char next = file.peek();
+//       if (next == ',') {
+//         file.read();
+//         break;
+//       } else if (isspace(next)) {
+//         file.read();
+//       } else if (next == ']') {
+//         file.read();
+//         fim = true;
+//         break;
+//       } else {
+//         break;
+//       }
+//     }
+
+//     if (fim) break;
+
+//     doc.clear();
+//   }
+
+//   file.close();
+// }
 
 bool validarEstruturaJSON(const char* path) {
   File file = SD.open(path);
