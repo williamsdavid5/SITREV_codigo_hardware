@@ -45,12 +45,19 @@ int vel_max_chuva;
 MFRC522 mfrc522(SS_PIN_RFID, RST_PIN);
 SPIClass spiRFID(VSPI);  // VSPI para RFID
 
+boolean rfidLido = false;
+String rfidValor;
+
 // SPIClass para SD no HSPI
 SPIClass spiSD(HSPI);
+
+boolean lcdFlag = false; //flag para controlar a impressão no lcd
+//ajuda a impedir impressão constante desnecessária
 
 #define LED_PIN 2  // LED embutido do ESP32
 
 void taskRFID(void* parameter) {
+  Serial.print("RFID pronto");
   bool cartaoPresente = false;
 
   for (;;) {
@@ -71,6 +78,9 @@ void taskRFID(void* parameter) {
 
       uid.toUpperCase();
       Serial.println(uid);
+
+      rfidValor = uid;
+      rfidLido = !rfidLido;
 
       mfrc522.PICC_HaltA();
     } else {
@@ -97,21 +107,13 @@ void setup() {
   lcd.begin(16, 2);
   lcd.backlight();
   lcd.clear();
-  lcd.print("Iniciando...");
+  lcd.print("Iniciando");
+  lcd.setCursor(0, 1);
+  lcd.print("Aguarde...");
 
   // Iniciar SPI
   SPI.begin(14, 12, 13, SS_PIN_RFID);
   mfrc522.PCD_Init();
-
-  xTaskCreatePinnedToCore(
-    taskRFID,     // Função da tarefa
-    "RFID Reader",// Nome da tarefa
-    4096,         // Tamanho da stack
-    NULL,         // Parâmetro
-    1,            // Prioridade
-    NULL,         // Handle da tarefa
-    0             // Core 0 (o loop() roda no Core 1)
-  );
 
   Serial.println("Conectando ao Wi-Fi...");
   WiFi.begin(ssid, password);
@@ -140,6 +142,17 @@ void setup() {
     atualizarMotoristas();
   }
 
+  xTaskCreatePinnedToCore(
+    taskRFID,     // Função da tarefa
+    "RFID Reader",// Nome da tarefa
+    4096,         // Tamanho da stack
+    NULL,         // Parâmetro
+    1,            // Prioridade
+    NULL,         // Handle da tarefa
+    0             // Core 0 (o loop() roda no Core 1)
+  );
+
+  lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Iniciando gps...");
 }
@@ -165,21 +178,43 @@ void loop() {
     ultimaAtualizacao = millis();
   }
 
-  while (gpsSerial.available()) {
-    gps.encode(gpsSerial.read());
+  if (rfidLido) {
 
-    if (gps.location.isUpdated()) {
-      float lat = gps.location.lat();
-      float lng = gps.location.lng();
+    if (rfidLido && lcdFlag) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Bem vindo");
 
-      if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
-        Serial.print("Lat: "); Serial.println(lat, 6);
-        Serial.print("Lng: "); Serial.println(lng, 6);
-        ultimaVerificacaoCercas = millis();
-        verificarCercas(lat, lng);
+      delay(5000);
+
+      lcdFlag = false;
+    }
+
+    while (gpsSerial.available()) {
+      gps.encode(gpsSerial.read());
+
+      if (gps.location.isUpdated()) {
+        float lat = gps.location.lat();
+        float lng = gps.location.lng();
+
+        if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
+          Serial.print("Lat: "); Serial.println(lat, 6);
+          Serial.print("Lng: "); Serial.println(lng, 6);
+          ultimaVerificacaoCercas = millis();
+          verificarCercas(lat, lng);
+        }
       }
     }
+  } else {
+
+    if (!lcdFlag) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Pronto!");
+      lcdFlag = true;
+    }
   }
+
 }
 
 void atualizarCercas() {
