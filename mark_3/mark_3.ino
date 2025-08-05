@@ -58,6 +58,7 @@ StaticJsonDocument<512> motoristaAtual;
 bool motoristaEncontrado = false;
 
 #define LED_PIN 2  // LED embutido do ESP32
+#define BUZZER_PIN 17
 
 void taskRFID(void* parameter) {
   Serial.print("RFID pronto");
@@ -67,6 +68,14 @@ void taskRFID(void* parameter) {
     if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
       if (!cartaoPresente) {
         digitalWrite(LED_PIN, HIGH);  // Acende LED
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(50); // duração do bip
+        digitalWrite(BUZZER_PIN, LOW);
+        delay(35);
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(50); // duração do bsip
+        digitalWrite(BUZZER_PIN, LOW);
+
         cartaoPresente = true;
       }
 
@@ -104,7 +113,10 @@ void setup() {
   Serial.begin(115200);
 
   pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
   digitalWrite(LED_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
 
   gpsSerial.begin(9600, SERIAL_8N1, RX_GPS, TX_GPS);
 
