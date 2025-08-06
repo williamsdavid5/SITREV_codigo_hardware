@@ -60,47 +60,81 @@ bool motoristaEncontrado = false;
 #define LED_PIN 2  // LED embutido do ESP32
 #define BUZZER_PIN 17
 
+bool gpsAtivo = false;
+
+String ultimoUID = "";
+
+bool limiteCarregadoOffline = false;
+
+void processarCartao(String uid) {
+  if (!rfidLido) {
+    // Início da viagem
+    verificarMotoristaPorRFID();
+    if (motoristaEncontrado) {
+      rfidLido = true;
+      ultimoUID = uid; // Guarda para confirmar no encerramento
+      lcdFlag = true;
+      Serial.println("🚗 Viagem iniciada");
+    } else {
+      Serial.println("❌ Cartão não autorizado");
+    }
+  } else {
+    // Fim da viagem (somente se for o mesmo cartão)
+    if (uid == ultimoUID) {
+      rfidLido = false;
+      limiteCarregadoOffline = false;
+      salvarUltimoLimite();
+      motoristaEncontrado = false;
+      ultimoUID = "";
+      lcd.clear();
+      lcd.print("Viagem encerrada");
+      Serial.println("🛑 Viagem encerrada");
+      delay(5000);
+      lcd.clear();
+      lcd.print("Inicie a viagem");
+    } else {
+      Serial.println("❌ Cartão não corresponde ao motorista");
+    }
+  }
+}
+
 void taskRFID(void* parameter) {
-  Serial.print("RFID pronto");
+  Serial.println("RFID pronto");
   bool cartaoPresente = false;
 
   for (;;) {
     if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+      String uid = "";
+      for (byte i = 0; i < mfrc522.uid.size; i++) {
+        if (mfrc522.uid.uidByte[i] < 0x10) uid += "0";
+        uid += String(mfrc522.uid.uidByte[i], HEX);
+      }
+      uid.toUpperCase();
+
       if (!cartaoPresente) {
-        digitalWrite(LED_PIN, HIGH);  // Acende LED
+        // Apenas processa quando o cartão for inserido novamente
+        digitalWrite(LED_PIN, HIGH);
         digitalWrite(BUZZER_PIN, HIGH);
-        delay(50); // duração do bip
+        delay(50);
         digitalWrite(BUZZER_PIN, LOW);
         delay(35);
         digitalWrite(BUZZER_PIN, HIGH);
-        delay(50); // duração do bsip
+        delay(50);
         digitalWrite(BUZZER_PIN, LOW);
 
+        Serial.print("🔍 UID lido: ");
+        Serial.println(uid);
+
+        rfidValor = uid;
+        processarCartao(uid);
         cartaoPresente = true;
       }
-
-      String uid = "";
-      Serial.print("🔍 UID lido: ");
-      for (byte i = 0; i < mfrc522.uid.size; i++) {
-        if (mfrc522.uid.uidByte[i] < 0x10) {
-          uid += "0";
-        }
-        uid += String(mfrc522.uid.uidByte[i], HEX);
-      }
-
-      uid.toUpperCase();
-      Serial.println(uid);
-
-      rfidValor = uid;
-      rfidLido = !rfidLido;
-
-      verificarMotoristaPorRFID();
 
       mfrc522.PICC_HaltA();
     } else {
       if (cartaoPresente) {
         digitalWrite(LED_PIN, LOW);
-        cartaoPresente = false;
+        cartaoPresente = false; // Liberar para próxima leitura
       }
     }
 
@@ -117,6 +151,8 @@ void setup() {
 
   digitalWrite(LED_PIN, LOW);
   digitalWrite(BUZZER_PIN, LOW);
+
+  limiteCarregadoOffline = false;
 
   gpsSerial.begin(9600, SERIAL_8N1, RX_GPS, TX_GPS);
 
@@ -210,10 +246,30 @@ void loop() {
       lcdFlag = false;
     }
 
+    if (!gpsAtivo && !limiteCarregadoOffline) {
+      if (carregarUltimoLimite()) {
+        lcd.clear();
+        lcd.setCursor(0, 1);
+        lcd.print("Limite:");
+        lcd.setCursor(8, 1);
+        lcd.print(vel_max);
+        lcd.print("km/h");
+
+        Serial.println("✅ Limite carregado do SD na ausência do GPS.");
+        limiteCarregadoOffline = true;
+      } else {
+        Serial.println("⚠️ Falha ao carregar limite do SD.");
+      }
+    }
+
+
     while (gpsSerial.available()) {
       gps.encode(gpsSerial.read());
 
       if (gps.location.isUpdated()) {
+        
+        gpsAtivo = true;
+
         float lat = gps.location.lat();
         float lng = gps.location.lng();
 
@@ -226,6 +282,7 @@ void loop() {
       }
     }
   } else {
+
     if (!lcdFlag) {
       lcd.clear();
       lcd.setCursor(0, 0);
@@ -530,6 +587,36 @@ bool validarEstruturaJSON(const char* path) {
   file.close();
 
   return (chaves == 0 && colchetes == 0);  // JSON bem balanceado
+}
+
+// para salvar o ultimo limite no cartão sd
+// para resolver o problema da demora de inicialização do gps
+void salvarUltimoLimite() {
+  File file = SD.open("/ultimo_limite.txt", FILE_WRITE);
+  if (file) {
+    file.printf("%d,%d\n", vel_max, vel_max_chuva);
+    file.close();
+    Serial.printf("💾 Último limite salvo: %d / %d\n", vel_max, vel_max_chuva);
+  } else {
+    Serial.println("❌ Erro ao salvar último limite.");
+  }
+}
+
+//caso o gps não tenha sido iniciado, carrega o ultimo limite
+bool carregarUltimoLimite() {
+  File file = SD.open("/ultimo_limite.txt");
+  if (file) {
+    String linha = file.readStringUntil('\n');
+    file.close();
+    int v1, v2;
+    if (sscanf(linha.c_str(), "%d,%d", &v1, &v2) == 2) {
+      vel_max = v1;
+      vel_max_chuva = v2;
+      Serial.printf("📂 Limite carregado do SD: %d / %d\n", vel_max, vel_max_chuva);
+      return true;
+    }
+  }
+  return false;
 }
 
 
