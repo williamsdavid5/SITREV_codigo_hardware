@@ -13,6 +13,14 @@
 
 // === Cartão SD ===
 #define SD_CS 33
+// SPIClass para SD no HSPI
+SPIClass spiSD(HSPI);
+
+bool limiteCarregadoOffline = false; //controle do limite carregado offline
+//para controlar quando o gps nao funciona e precisamos de um limite offline
+//ela evita que o sistema tente carregar repetidamente o limite do cartão
+StaticJsonDocument<512> motoristaAtual;
+bool motoristaEncontrado = false;
 
 // === GPS ===
 #define RX_GPS 16
@@ -20,8 +28,12 @@
 HardwareSerial gpsSerial(2);  // UART2
 TinyGPSPlus gps;
 
+bool gpsAtivo = false;
+
 // === LCD ===
 LiquidCrystal_I2C lcd(0x27, 16, 2);
+boolean lcdFlag = false; //flag para controlar a impressão no lcd
+//ajuda a impedir impressão constante desnecessária
 
 // === Wi-Fi e API ===
 const char* ssid = "Duarte_Fotos";
@@ -47,24 +59,10 @@ SPIClass spiRFID(VSPI);  // VSPI para RFID
 
 boolean rfidLido = false;
 String rfidValor;
-
-// SPIClass para SD no HSPI
-SPIClass spiSD(HSPI);
-
-boolean lcdFlag = false; //flag para controlar a impressão no lcd
-//ajuda a impedir impressão constante desnecessária
-
-StaticJsonDocument<512> motoristaAtual;
-bool motoristaEncontrado = false;
+String ultimoUID = "";
 
 #define LED_PIN 2  // LED embutido do ESP32
 #define BUZZER_PIN 17
-
-bool gpsAtivo = false;
-
-String ultimoUID = "";
-
-bool limiteCarregadoOffline = false;
 
 void processarCartao(String uid) {
   if (!rfidLido) {
@@ -351,12 +349,16 @@ void atualizarCercas() {
           Serial.println("⚠️ JSON inválido (estrutura incompleta). Mantendo arquivo antigo.");
         }
 
+      } else {
+        Serial.println("❌ Erro ao abrir arquivo temporário para escrita.");
+      }
     } else {
-      Serial.println("❌ Erro ao abrir arquivo temporário para escrita.");
+      Serial.print("⚠️ Falha na requisição. Código HTTP: ");
+      Serial.println(httpCode);
     }
-  }
-
+    
     https.end();
+
   } else {
     Serial.println("❌ Erro ao iniciar conexão HTTPS.");
   }
