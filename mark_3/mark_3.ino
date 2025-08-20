@@ -30,6 +30,13 @@ TinyGPSPlus gps;
 
 bool gpsAtivo = false;
 
+//coordenadas de origem
+//necessárias no registro, mas o GPS demora para iniciar
+//isso garante que elas não fiquem vazias
+double origemLat = 0.0;
+double origemLng = 0.0;
+bool origemDefinida = false;
+
 // === LCD ===
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 boolean lcdFlag = false; //flag para controlar a impressão no lcd
@@ -64,6 +71,18 @@ String ultimoUID = "";
 #define LED_PIN 2  // LED embutido do ESP32
 #define BUZZER_PIN 17
 
+//variaveis auxiliares para a logica de registrar viajem offline
+//para que os dados sejam armazenados no cartão
+File arquivoViagem;
+String nomeArquivoViagem = "";
+bool viagemAtiva = false;
+bool primeiroRegistro = true;
+
+// === ID do Veículo ===
+const int VEICULO_ID = 2;
+const String VEICULO_IDENTIFICADOR = "VEICULO_2";
+const String VEICULO_MODELO = "Toyota Hilux";
+
 void processarCartao(String uid) {
   if (!rfidLido) {
     // Início da viagem
@@ -87,6 +106,9 @@ void processarCartao(String uid) {
       lcd.clear();
       lcd.print("Viagem encerrada");
       Serial.println("🛑 Viagem encerrada");
+
+      encerrarViagem(gps.location.lat(), gps.location.lng());
+
       delay(5000);
       lcd.clear();
       lcd.print("Inicie a viagem");
@@ -95,6 +117,8 @@ void processarCartao(String uid) {
     }
   }
 }
+
+//------------------------------------------------------------------------
 
 void taskRFID(void* parameter) {
   Serial.println("RFID pronto");
@@ -140,6 +164,7 @@ void taskRFID(void* parameter) {
   }
 }
 
+//------------------------------------------------------------------------
 
 void setup() {
   Serial.begin(115200);
@@ -153,6 +178,22 @@ void setup() {
   limiteCarregadoOffline = false;
 
   gpsSerial.begin(9600, SERIAL_8N1, RX_GPS, TX_GPS);
+
+  unsigned long inicioGPS = millis();
+  bool gpsRespondendo = false;
+  while (millis() - inicioGPS < 3000) { // 3 segundos de teste
+      while (gpsSerial.available()) {
+          char c = gpsSerial.read();
+          Serial.write(c); // imprime cada caractere vindo do GPS
+          gpsRespondendo = true;
+      }
+  }
+
+  if (gpsRespondendo) {
+      Serial.println("\n✅ GPS respondendo!");
+  } else {
+      Serial.println("\n⚠️ GPS não respondeu, verifique conexões.");
+  }
 
   Wire.begin(4, 5);
   lcd.begin(16, 2);
@@ -188,6 +229,11 @@ void setup() {
   }
   Serial.println("✅ Cartão SD iniciado");
 
+  if (!SD.exists("/viagens")) {
+    SD.mkdir("/viagens");
+    Serial.println("📁 Diretório /viagens criado");
+  }
+
   if (WiFi.status() == WL_CONNECTED) {
     atualizarCercas();
     atualizarMotoristas();
@@ -207,6 +253,8 @@ void setup() {
   lcd.setCursor(0, 0);
   lcd.print("Iniciando gps...");
 }
+
+//------------------------------------------------------------------------
 
 void loop() {
   if (millis() - ultimaAtualizacao > intervaloAtualizacao) {
@@ -239,6 +287,7 @@ void loop() {
       lcd.setCursor(0, 1);
       lcd.print(motoristaAtual["nome"].as<const char*>());
 
+      iniciarViagem();
       delay(5000);
 
       lcdFlag = false;
@@ -261,24 +310,41 @@ void loop() {
     }
 
 
-    while (gpsSerial.available()) {
-      gps.encode(gpsSerial.read());
+  while (gpsSerial.available()) {
+    gps.encode(gpsSerial.read());
 
-      if (gps.location.isUpdated()) {
-        
-        gpsAtivo = true;
+    if (gps.location.isUpdated()) {
+      gpsAtivo = true;
 
-        float lat = gps.location.lat();
-        float lng = gps.location.lng();
+      float lat = gps.location.lat();
+      float lng = gps.location.lng();
+      float vel = gps.speed.kmph(); // velocidade do obd2
+      bool chuva = false; // sensor IR
 
-        if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
-          Serial.print("Lat: "); Serial.println(lat, 6);
-          Serial.print("Lng: "); Serial.println(lng, 6);
-          ultimaVerificacaoCercas = millis();
-          verificarCercas(lat, lng);
-        }
+      // registra a primeira coordenada recebida do GPS como coordenada de origem
+      if (!origemDefinida && gps.location.isValid()) {
+        origemLat = lat;
+        origemLng = lng;
+        origemDefinida = true;
+
+        Serial.print("✅ Origem registrada: ");
+        Serial.print(origemLat, 6);
+        Serial.print(", ");
+        Serial.println(origemLng, 6);
+
+        registrarOrigem(lat, lng);
+      }
+
+      if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
+        Serial.print("Lat: "); Serial.println(lat, 6);
+        Serial.print("Lng: "); Serial.println(lng, 6);
+        ultimaVerificacaoCercas = millis();
+
+        verificarCercas(lat, lng);
+        registrarPosicao(lat, lng, vel, chuva);
       }
     }
+  }
   } else {
 
     if (!lcdFlag) {
@@ -289,6 +355,8 @@ void loop() {
     }
   }
 }
+
+//------------------------------------------------------------------------
 
 void atualizarCercas() {
   WiFiClientSecure client;
@@ -500,68 +568,6 @@ void verificarMotoristaPorRFID() {
   }
 }
 
-
-// void imprimirMotoristas() {
-//   File file = SD.open("/motoristas.json");
-//   if (!file) {
-//     Serial.println("❌ Não foi possível abrir motoristas.json");
-//     return;
-//   }
-
-//   char c;
-//   do {
-//     c = file.read();
-//   } while (c != -1 && isspace(c));
-
-//   if (c != '[') {
-//     Serial.println("Formato inválido em motoristas.json");
-//     file.close();
-//     return;
-//   }
-
-//   StaticJsonDocument<1024> doc;
-
-//   while (file.available()) {
-//     DeserializationError err = deserializeJson(doc, file);
-//     if (err) {
-//       Serial.print("Erro ao parsear motorista: ");
-//       Serial.println(err.c_str());
-//       break;
-//     }
-
-//     JsonObject motorista = doc.as<JsonObject>();
-//     Serial.println("👤 Motorista:");
-//     Serial.print("  ID: "); Serial.println(motorista["id"].as<int>());
-//     Serial.print("  Nome: "); Serial.println(motorista["nome"].as<const char*>());
-//     Serial.print("  Cartão RFID: "); Serial.println(motorista["cartao_rfid"].as<const char*>());
-//     Serial.println("------");
-
-//     // avança para o próximo
-//     bool fim = false;
-//     while (file.available()) {
-//       char next = file.peek();
-//       if (next == ',') {
-//         file.read();
-//         break;
-//       } else if (isspace(next)) {
-//         file.read();
-//       } else if (next == ']') {
-//         file.read();
-//         fim = true;
-//         break;
-//       } else {
-//         break;
-//       }
-//     }
-
-//     if (fim) break;
-
-//     doc.clear();
-//   }
-
-//   file.close();
-// }
-
 bool validarEstruturaJSON(const char* path) {
   File file = SD.open(path);
   if (!file) {
@@ -620,7 +626,6 @@ bool carregarUltimoLimite() {
   }
   return false;
 }
-
 
 void verificarCercas(float lat, float lng) {
   File file = SD.open("/cercas.json");
@@ -739,4 +744,112 @@ bool dentroDoPoligono(float x, float y, JsonArray coords) {
   }
 
   return dentro;
+}
+
+String getTimestamp() {
+  if (gps.date.isValid() && gps.time.isValid()) {
+    char buffer[25];
+    sprintf(buffer, "%04d-%02d-%02dT%02d:%02d:%02dZ",
+            gps.date.year(),
+            gps.date.month(),
+            gps.date.day(),
+            gps.time.hour(),
+            gps.time.minute(),
+            gps.time.second());
+    return String(buffer);
+  }
+  return "0000-00-00T00:00:00Z";
+}
+
+void iniciarViagem() {
+  nomeArquivoViagem = "/viagens/viagem_" + getTimestamp().substring(0, 10) + ".json";
+  arquivoViagem = SD.open(nomeArquivoViagem, FILE_WRITE);
+
+  if (!arquivoViagem) {
+    Serial.println("Erro ao criar arquivo");
+    return;
+  }
+
+  arquivoViagem.print("{\"motorista_id\":");
+  arquivoViagem.print(motoristaAtual["id"].as<int>());
+  arquivoViagem.print(",\"veiculo_id\":");
+  arquivoViagem.print(VEICULO_ID);
+  arquivoViagem.print(",\"chuva_detectada\":false,\"registros\":[");
+  arquivoViagem.flush();
+
+  primeiroRegistro = true;
+  viagemAtiva = true;
+}
+
+void registrarOrigem(float lat, float lng) {
+  if (origemDefinida || !viagemAtiva) return;
+
+  Serial.println("🔄 Atualizando origem no arquivo...");
+  
+  origemLat = lat;
+  origemLng = lng;
+  origemDefinida = true;
+
+  // Fecha completamente o arquivo atual
+  arquivoViagem.flush();
+  arquivoViagem.close();
+
+  // Lê TODO o conteúdo do arquivo
+  File fileRead = SD.open(nomeArquivoViagem, FILE_READ);
+  if (!fileRead) {
+    Serial.println("❌ Erro ao abrir arquivo para leitura");
+    return;
+  }
+
+  String conteudo = "";
+  while (fileRead.available()) {
+    conteudo += (char)fileRead.read();
+  }
+  fileRead.close();
+
+  // Para a nova estrutura, não precisamos mais de origem/destino
+  // Apenas registramos que a origem foi definida
+  Serial.println("✅ Origem registrada, mas não salva na nova estrutura JSON");
+
+  // Reabre para continuar adicionando registros
+  arquivoViagem = SD.open(nomeArquivoViagem, FILE_APPEND);
+  if (!arquivoViagem) {
+    Serial.println("❌ Erro ao reabrir arquivo para append");
+    viagemAtiva = false;
+    return;
+  }
+
+  Serial.println("✅ Origem atualizada!");
+}
+
+void registrarPosicao(float lat, float lng, float vel, bool chuva) {
+  if (!viagemAtiva) return;
+
+  if (!primeiroRegistro) arquivoViagem.print(",");
+  primeiroRegistro = false;
+
+  arquivoViagem.print("{");
+  arquivoViagem.print("\"timestamp\":\"");
+  arquivoViagem.print(getTimestamp());
+  arquivoViagem.print("\",\"latitude\":\"");
+  arquivoViagem.print(lat, 6);
+  arquivoViagem.print("\",\"longitude\":\"");
+  arquivoViagem.print(lng, 6);
+  arquivoViagem.print("\",\"velocidade\":\"");
+  arquivoViagem.print(vel, 2);
+  arquivoViagem.print("\",\"chuva\":");
+  arquivoViagem.print(chuva ? "true" : "false");
+  arquivoViagem.print("}");
+
+  arquivoViagem.flush();
+}
+
+void encerrarViagem(float destinoLat, float destinoLng) {
+  if (!viagemAtiva) return;
+
+  arquivoViagem.print("]}");
+  arquivoViagem.flush();
+  arquivoViagem.close();
+  viagemAtiva = false;
+  Serial.println("✅ Viagem encerrada e arquivo salvo");
 }
