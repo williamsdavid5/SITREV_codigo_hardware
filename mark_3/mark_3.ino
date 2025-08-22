@@ -109,7 +109,7 @@ void processarCartao(String uid) {
 
       encerrarViagem(gps.location.lat(), gps.location.lng());
 
-      delay(5000);
+      delay(3000);
       lcd.clear();
       lcd.print("Inicie a viagem");
     } else {
@@ -288,7 +288,7 @@ void loop() {
       lcd.print(motoristaAtual["nome"].as<const char*>());
 
       iniciarViagem();
-      delay(5000);
+      delay(3000);
 
       lcdFlag = false;
     }
@@ -761,26 +761,6 @@ String getTimestamp() {
   return "0000-00-00T00:00:00Z";
 }
 
-void iniciarViagem() {
-  nomeArquivoViagem = "/viagens/viagem_" + getTimestamp().substring(0, 10) + ".json";
-  arquivoViagem = SD.open(nomeArquivoViagem, FILE_WRITE);
-
-  if (!arquivoViagem) {
-    Serial.println("Erro ao criar arquivo");
-    return;
-  }
-
-  arquivoViagem.print("{\"motorista_id\":");
-  arquivoViagem.print(motoristaAtual["id"].as<int>());
-  arquivoViagem.print(",\"veiculo_id\":");
-  arquivoViagem.print(VEICULO_ID);
-  arquivoViagem.print(",\"chuva_detectada\":false,\"registros\":[");
-  arquivoViagem.flush();
-
-  primeiroRegistro = true;
-  viagemAtiva = true;
-}
-
 void registrarOrigem(float lat, float lng) {
   if (origemDefinida || !viagemAtiva) return;
 
@@ -825,10 +805,32 @@ void registrarOrigem(float lat, float lng) {
 void registrarPosicao(float lat, float lng, float vel, bool chuva) {
   if (!viagemAtiva) return;
 
-  if (!primeiroRegistro) arquivoViagem.print(",");
-  primeiroRegistro = false;
+  if (primeiroRegistro) {
+    primeiroRegistro = false;
+    
+    File fileRead = SD.open(nomeArquivoViagem, FILE_READ);
+    if (!fileRead) {
+      Serial.println("❌ Erro ao abrir arquivo para leitura");
+      return;
+    }
+    
+    String conteudo = fileRead.readString();
+    fileRead.close();
 
-  arquivoViagem.print("{");
+    conteudo.remove(conteudo.length() - 2);
+    
+    arquivoViagem = SD.open(nomeArquivoViagem, FILE_WRITE);
+    if (!arquivoViagem) {
+      Serial.println("❌ Erro ao reabrir arquivo");
+      return;
+    }
+    
+    arquivoViagem.print(conteudo);
+    arquivoViagem.print("[{");
+  } else {
+    arquivoViagem.print(",{");
+  }
+
   arquivoViagem.print("\"timestamp\":\"");
   arquivoViagem.print(getTimestamp());
   arquivoViagem.print("\",\"latitude\":\"");
@@ -844,12 +846,39 @@ void registrarPosicao(float lat, float lng, float vel, bool chuva) {
   arquivoViagem.flush();
 }
 
+void iniciarViagem() {
+  nomeArquivoViagem = "/viagens/viagem_" + String(millis()) + ".json";
+  arquivoViagem = SD.open(nomeArquivoViagem, FILE_WRITE);
+
+  if (!arquivoViagem) {
+    Serial.println("Erro ao criar arquivo");
+    return;
+  }
+  arquivoViagem.print("{\"motorista_id\":");
+  arquivoViagem.print(motoristaAtual["id"].as<int>());
+  arquivoViagem.print(",\"veiculo_id\":");
+  arquivoViagem.print(VEICULO_ID);
+  arquivoViagem.print(",\"chuva_detectada\":false,\"registros\":[]}");
+  arquivoViagem.flush();
+
+  // arquivoViagem.close();
+  
+  viagemAtiva = true;
+  primeiroRegistro = true;
+  Serial.println("✅ Cabeçalho da viagem criado (sem registros)");
+}
+
 void encerrarViagem(float destinoLat, float destinoLng) {
   if (!viagemAtiva) return;
 
-  arquivoViagem.print("]}");
-  arquivoViagem.flush();
-  arquivoViagem.close();
+  if (primeiroRegistro) {
+    arquivoViagem.close();
+  } else {
+    arquivoViagem.print("]}");
+    arquivoViagem.flush();
+    arquivoViagem.close();
+  }
+  
   viagemAtiva = false;
-  Serial.println("✅ Viagem encerrada e arquivo salvo");
+  Serial.println("✅ Viagem encerrada");
 }
