@@ -264,6 +264,7 @@ void setup() {
 
   // Iniciar SPI
   SPI.begin(14, 12, 13, SS_PIN_RFID);
+  // spiRFID.begin(14, 12, 13, SS_PIN_RFID);
   mfrc522.PCD_Init();
 
   // Serial.println("Conectando ao Wi-Fi...");
@@ -658,9 +659,13 @@ bool validarEstruturaJSON(const char* path) {
 // para salvar o ultimo limite no cartão sd
 // para resolver o problema da demora de inicialização do gps
 void salvarUltimoLimite() {
+  delay(10);
+  
   File file = SD.open("/ultimo_limite.txt", FILE_WRITE);
   if (file) {
     file.printf("%d,%d\n", vel_max, vel_max_chuva);
+    file.flush();
+    delay(10);
     file.close();
     Serial.printf("💾 Último limite salvo: %d / %d\n", vel_max, vel_max_chuva);
   } else {
@@ -670,6 +675,8 @@ void salvarUltimoLimite() {
 
 //caso o gps não tenha sido iniciado, carrega o ultimo limite
 bool carregarUltimoLimite() {
+  delay(10);
+  
   File file = SD.open("/ultimo_limite.txt");
   if (file) {
     String linha = file.readStringUntil('\n');
@@ -804,6 +811,7 @@ bool dentroDoPoligono(float x, float y, JsonArray coords) {
   return dentro;
 }
 
+// Funções para a lógica de registrar as posições --------------------------------------------------
 String getTimestamp() {
   if (gps.date.isValid() && gps.time.isValid()) {
     char buffer[25];
@@ -819,10 +827,9 @@ String getTimestamp() {
   return "0000-00-00T00:00:00Z";
 }
 
-
-// === NOVAS FUNÇÕES PARA ESTRUTURA SIMPLIFICADA ===
-
 void iniciarViagem() {
+  delay(50);
+  
   nomeArquivoViagem = "/viagens/viagem_" + String(millis()) + ".json";
   arquivoViagem = SD.open(nomeArquivoViagem, FILE_WRITE);
 
@@ -842,14 +849,17 @@ void iniciarViagem() {
   arquivoViagem.println(); // Nova linha para o próximo registro
   
   arquivoViagem.flush();
+  delay(10);
+  
   viagemAtiva = true;
   Serial.println("✅ Cabeçalho da viagem criado");
 }
 
 void registrarPosicao(float lat, float lng, float vel, bool chuva) {
   if (!viagemAtiva) return;
-
-  // Registro de posição - cada linha é independente
+  
+  delay(10);
+  
   arquivoViagem.print("{\"timestamp\":\"");
   arquivoViagem.print(getTimestamp());
   arquivoViagem.print("\",\"lat\":");
@@ -867,12 +877,16 @@ void registrarPosicao(float lat, float lng, float vel, bool chuva) {
   arquivoViagem.print("}");
   arquivoViagem.println(); // Nova linha para o próximo registro
   
-  arquivoViagem.flush(); // Força escrita imediata no cartão
+  arquivoViagem.flush();
+  salvarUltimoLimite();
+  delay(10);
 }
 
 void encerrarViagem() {
   if (!viagemAtiva) return;
 
+  delay(20);
+  
   // Última linha com coordenadas finais
   arquivoViagem.print("{\"fim\":\"");
   arquivoViagem.print(getTimestamp());
@@ -881,10 +895,13 @@ void encerrarViagem() {
   arquivoViagem.print(",\"dest_lng\":");
   arquivoViagem.print(gps.location.isValid() ? gps.location.lng() : origemLng, 6);
   arquivoViagem.print("}");
-  arquivoViagem.println(); // Finaliza com nova linha
+  arquivoViagem.println();
   
   arquivoViagem.flush();
+  delay(20);
+  
   arquivoViagem.close();
+  delay(10);
   
   viagemAtiva = false;
   origemDefinida = false;
