@@ -131,7 +131,7 @@ void processarCartao(String uid) {
       lcd.print("Viagem encerrada");
       Serial.println("🛑 Viagem encerrada");
 
-      encerrarViagem(gps.location.lat(), gps.location.lng());
+      encerrarViagem();
 
       delay(3000);
       lcd.clear();
@@ -141,7 +141,7 @@ void processarCartao(String uid) {
       Serial.println("🔄 Motorista diferente - trocando viagem");
       
       // Primeiro encerra a viagem atual
-      encerrarViagem(gps.location.lat(), gps.location.lng());
+      encerrarViagem();
       
       // Limpa variáveis da viagem anterior
       rfidLido = false;
@@ -927,17 +927,27 @@ void iniciarViagem() {
   Serial.println("✅ Cabeçalho da viagem criado (sem registros)");
 }
 
-void encerrarViagem(float destinoLat, float destinoLng) {
-  if (!viagemAtiva) return;
+void encerrarViagem() {
+    if (!viagemAtiva) return;
 
-  if (primeiroRegistro) {
-    arquivoViagem.close();
-  } else {
-    arquivoViagem.print("]}");
-    arquivoViagem.flush();
-    arquivoViagem.close();
-  }
-  
-  viagemAtiva = false;
-  Serial.println("✅ Viagem encerrada");
+    // Usar coordenadas atuais se disponíveis, senão usar as últimas conhecidas
+    float destinoLat = gps.location.isValid() ? gps.location.lat() : origemLat;
+    float destinoLng = gps.location.isValid() ? gps.location.lng() : origemLng;
+
+    Serial.print("📍 Destino final: ");
+    Serial.print(destinoLat, 6);
+    Serial.print(", ");
+    Serial.println(destinoLng, 6);
+
+    if (primeiroRegistro) {
+        arquivoViagem.close();
+    } else {
+        arquivoViagem.print("]}");
+        arquivoViagem.flush();
+        arquivoViagem.close();
+    }
+    
+    viagemAtiva = false;
+    origemDefinida = false;
+    Serial.println("✅ Viagem encerrada");
 }
