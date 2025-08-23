@@ -391,7 +391,6 @@ void loop() {
         Serial.print(", ");
         Serial.println(origemLng, 6);
 
-        registrarOrigem(lat, lng);
       }
 
       if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
@@ -820,134 +819,77 @@ String getTimestamp() {
   return "0000-00-00T00:00:00Z";
 }
 
-void registrarOrigem(float lat, float lng) {
-  if (origemDefinida || !viagemAtiva) return;
 
-  Serial.println("🔄 Atualizando origem no arquivo...");
-  
-  origemLat = lat;
-  origemLng = lng;
-  origemDefinida = true;
-
-  // Fecha completamente o arquivo atual
-  arquivoViagem.flush();
-  arquivoViagem.close();
-
-  // Lê TODO o conteúdo do arquivo
-  File fileRead = SD.open(nomeArquivoViagem, FILE_READ);
-  if (!fileRead) {
-    Serial.println("❌ Erro ao abrir arquivo para leitura");
-    return;
-  }
-
-  String conteudo = "";
-  while (fileRead.available()) {
-    conteudo += (char)fileRead.read();
-  }
-  fileRead.close();
-
-  // Para a nova estrutura, não precisamos mais de origem/destino
-  // Apenas registramos que a origem foi definida
-  Serial.println("✅ Origem registrada, mas não salva na nova estrutura JSON");
-
-  // Reabre para continuar adicionando registros
-  arquivoViagem = SD.open(nomeArquivoViagem, FILE_APPEND);
-  if (!arquivoViagem) {
-    Serial.println("❌ Erro ao reabrir arquivo para append");
-    viagemAtiva = false;
-    return;
-  }
-
-  Serial.println("✅ Origem atualizada!");
-}
-
-void registrarPosicao(float lat, float lng, float vel, bool chuva) {
-  if (!viagemAtiva) return;
-
-  if (primeiroRegistro) {
-    primeiroRegistro = false;
-    
-    File fileRead = SD.open(nomeArquivoViagem, FILE_READ);
-    if (!fileRead) {
-      Serial.println("❌ Erro ao abrir arquivo para leitura");
-      return;
-    }
-    
-    String conteudo = fileRead.readString();
-    fileRead.close();
-
-    conteudo.remove(conteudo.length() - 2);
-    
-    arquivoViagem = SD.open(nomeArquivoViagem, FILE_WRITE);
-    if (!arquivoViagem) {
-      Serial.println("❌ Erro ao reabrir arquivo");
-      return;
-    }
-    
-    arquivoViagem.print(conteudo);
-    arquivoViagem.print("[{");
-  } else {
-    arquivoViagem.print(",{");
-  }
-
-  arquivoViagem.print("\"timestamp\":\"");
-  arquivoViagem.print(getTimestamp());
-  arquivoViagem.print("\",\"latitude\":\"");
-  arquivoViagem.print(lat, 6);
-  arquivoViagem.print("\",\"longitude\":\"");
-  arquivoViagem.print(lng, 6);
-  arquivoViagem.print("\",\"velocidade\":\"");
-  arquivoViagem.print(vel, 2);
-  arquivoViagem.print("\",\"chuva\":");
-  arquivoViagem.print(chuva ? "true" : "false");
-  arquivoViagem.print("}");
-
-  arquivoViagem.flush();
-}
+// === NOVAS FUNÇÕES PARA ESTRUTURA SIMPLIFICADA ===
 
 void iniciarViagem() {
   nomeArquivoViagem = "/viagens/viagem_" + String(millis()) + ".json";
   arquivoViagem = SD.open(nomeArquivoViagem, FILE_WRITE);
 
   if (!arquivoViagem) {
-    Serial.println("Erro ao criar arquivo");
+    Serial.println("❌ Erro ao criar arquivo de viagem");
     return;
   }
+  
+  // Cabeçalho simplificado - primeira linha
   arquivoViagem.print("{\"motorista_id\":");
   arquivoViagem.print(motoristaAtual["id"].as<int>());
   arquivoViagem.print(",\"veiculo_id\":");
   arquivoViagem.print(VEICULO_ID);
-  arquivoViagem.print(",\"chuva_detectada\":false,\"registros\":[]}");
-  arquivoViagem.flush();
-
-  // arquivoViagem.close();
+  arquivoViagem.print(",\"inicio\":\"");
+  arquivoViagem.print(getTimestamp());
+  arquivoViagem.print("\"}");
+  arquivoViagem.println(); // Nova linha para o próximo registro
   
+  arquivoViagem.flush();
   viagemAtiva = true;
-  primeiroRegistro = true;
-  Serial.println("✅ Cabeçalho da viagem criado (sem registros)");
+  Serial.println("✅ Cabeçalho da viagem criado");
+}
+
+void registrarPosicao(float lat, float lng, float vel, bool chuva) {
+  if (!viagemAtiva) return;
+
+  // Registro de posição - cada linha é independente
+  arquivoViagem.print("{\"timestamp\":\"");
+  arquivoViagem.print(getTimestamp());
+  arquivoViagem.print("\",\"lat\":");
+  arquivoViagem.print(lat, 6);
+  arquivoViagem.print(",\"lng\":");
+  arquivoViagem.print(lng, 6);
+  arquivoViagem.print(",\"vel\":");
+  arquivoViagem.print(vel, 2);
+  arquivoViagem.print(",\"chuva\":");
+  arquivoViagem.print(chuva ? "true" : "false");
+  arquivoViagem.print(",\"lim_seco\":");
+  arquivoViagem.print(vel_max);
+  arquivoViagem.print(",\"lim_chuva\":");
+  arquivoViagem.print(vel_max_chuva);
+  arquivoViagem.print("}");
+  arquivoViagem.println(); // Nova linha para o próximo registro
+  
+  arquivoViagem.flush(); // Força escrita imediata no cartão
 }
 
 void encerrarViagem() {
-    if (!viagemAtiva) return;
+  if (!viagemAtiva) return;
 
-    // Usar coordenadas atuais se disponíveis, senão usar as últimas conhecidas
-    float destinoLat = gps.location.isValid() ? gps.location.lat() : origemLat;
-    float destinoLng = gps.location.isValid() ? gps.location.lng() : origemLng;
-
-    Serial.print("📍 Destino final: ");
-    Serial.print(destinoLat, 6);
-    Serial.print(", ");
-    Serial.println(destinoLng, 6);
-
-    if (primeiroRegistro) {
-        arquivoViagem.close();
-    } else {
-        arquivoViagem.print("]}");
-        arquivoViagem.flush();
-        arquivoViagem.close();
-    }
-    
-    viagemAtiva = false;
-    origemDefinida = false;
-    Serial.println("✅ Viagem encerrada");
+  // Última linha com coordenadas finais
+  arquivoViagem.print("{\"fim\":\"");
+  arquivoViagem.print(getTimestamp());
+  arquivoViagem.print("\",\"dest_lat\":");
+  arquivoViagem.print(gps.location.isValid() ? gps.location.lat() : origemLat, 6);
+  arquivoViagem.print(",\"dest_lng\":");
+  arquivoViagem.print(gps.location.isValid() ? gps.location.lng() : origemLng, 6);
+  arquivoViagem.print("}");
+  arquivoViagem.println(); // Finaliza com nova linha
+  
+  arquivoViagem.flush();
+  arquivoViagem.close();
+  
+  viagemAtiva = false;
+  origemDefinida = false;
+  Serial.println("✅ Viagem encerrada");
 }
+
+
+
