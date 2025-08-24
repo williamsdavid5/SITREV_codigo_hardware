@@ -62,7 +62,7 @@ int vel_max_chuva;
 #define SS_PIN_RFID 15
 
 MFRC522 mfrc522(SS_PIN_RFID, RST_PIN);
-SPIClass spiRFID(VSPI);  // VSPI para RFID
+// SPIClass spiRFID(VSPI);  // VSPI para RFID
 
 boolean rfidLido = false;
 String rfidValor;
@@ -90,14 +90,14 @@ void encerrarViagem(float destinoLat, float destinoLng);
 
 
 
-unsigned long ultimaLeituraRFID = 0;
-const unsigned long DEBOUNCE_RFID = 1000;
+// unsigned long ultimaLeituraRFID = 0;
+// const unsigned long DEBOUNCE_RFID = 1000;
 void processarCartao(String uid) {
-  if (millis() - ultimaLeituraRFID < DEBOUNCE_RFID) {
-    Serial.println("⏰ Debounce RFID: leitura ignorada (muito rápida)");
-    return;
-  }
-  ultimaLeituraRFID = millis();
+  // if (millis() - ultimaLeituraRFID < DEBOUNCE_RFID) {
+  //   Serial.println("⏰ Debounce RFID: leitura ignorada (muito rápida)");
+  //   return;
+  // }
+  // ultimaLeituraRFID = millis();
 
   // Guarda o UID atual para verificação
   String uidAnterior = rfidValor;
