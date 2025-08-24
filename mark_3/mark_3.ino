@@ -139,7 +139,7 @@ void processarCartao(String uid) {
     } else {
       // Motorista diferente - encerra viagem atual e inicia nova
       Serial.println("🔄 Motorista diferente - trocando viagem");
-      
+      delay(1500);
       // Primeiro encerra a viagem atual
       encerrarViagem();
       
@@ -157,17 +157,18 @@ void processarCartao(String uid) {
       Serial.println("🚗 Nova viagem iniciada com outro motorista");
       
       // Feedback visual
-      lcd.clear();
-      lcd.print("Troca motorista");
-      lcd.setCursor(0, 1);
-      lcd.print(motoristaAtual["nome"].as<const char*>());
+      // lcd.clear();
+      // lcd.print("Troca motorista");
+      // lcd.setCursor(0, 1);
+      // lcd.print(motoristaAtual["nome"].as<const char*>());
       
-      delay(2000);
+      // delay(2000);
     }
   }
 }
 
 //------------------------------------------------------------------------
+unsigned long ultimaRespostaRFID = millis();
 
 void taskRFID(void* parameter) {
   Serial.println("RFID pronto");
@@ -177,7 +178,11 @@ void taskRFID(void* parameter) {
   const unsigned long intervaloAntiRepeticao = 1000; // 1 segundo entre leituras
 
   for (;;) {
+
+    // Serial.println("[RFID] Tentando ler...");
+
     if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+      ultimaRespostaRFID = millis();
       String uid = "";
       for (byte i = 0; i < mfrc522.uid.size; i++) {
         if (mfrc522.uid.uidByte[i] < 0x10) uid += "0";
@@ -221,8 +226,22 @@ void taskRFID(void* parameter) {
       }
     }
 
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    if (millis() - ultimaRespostaRFID > 5000) {
+      Serial.println("[RFID] Nenhuma resposta, reiniciando módulo...");
+      reinicializarRFID();
+      ultimaRespostaRFID = millis();
+    }
+
+    vTaskDelay(50 / portTICK_PERIOD_MS);
   }
+}
+
+//função para resetar o rfid via software
+//tenta acabar com o bug do rfid nao funcionando
+void reinicializarRFID() {
+  mfrc522.PCD_Reset();
+  mfrc522.PCD_Init();
+  delay(50);
 }
 
 //------------------------------------------------------------------------
@@ -264,12 +283,6 @@ void setup() {
   lcd.setCursor(0, 1);
   lcd.print("Aguarde...");
 
-  // Iniciar SPI
-  SPI.begin(14, 12, 13, SS_PIN_RFID);
-  // spiRFID.begin(14, 12, 13, SS_PIN_RFID);
-  mfrc522.PCD_Init();  
-  mfrc522.PCD_DumpVersionToSerial();
-
   // Serial.println("Conectando ao Wi-Fi...");
   Serial.println("Iniciando conexão WiFi em segundo plano...");
   WiFi.begin(ssid, password);
@@ -303,12 +316,21 @@ void setup() {
   //   atualizarMotoristas();
   // }
 
+  delay(100);
+
+  // Iniciar SPI do rfid
+  SPI.begin(14, 12, 13, SS_PIN_RFID);
+  // spiRFID.begin(14, 12, 13, SS_PIN_RFID);
+  SPI.setFrequency(1000000);
+  mfrc522.PCD_Init();  
+  mfrc522.PCD_DumpVersionToSerial();
+
   xTaskCreatePinnedToCore(
     taskRFID,     // Função da tarefa
     "RFID Reader",// Nome da tarefa
     4096,         // Tamanho da stack
     NULL,         // Parâmetro
-    1,            // Prioridade
+    3,            // Prioridade
     NULL,         // Handle da tarefa
     0             // Core 0 (o loop() roda no Core 1)
   );
