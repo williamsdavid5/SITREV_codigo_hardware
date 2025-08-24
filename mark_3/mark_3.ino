@@ -171,64 +171,58 @@ void processarCartao(String uid) {
 unsigned long ultimaRespostaRFID = millis();
 
 void taskRFID(void* parameter) {
-  Serial.println("RFID pronto");
+  Serial.println("RFID Task iniciada");
   bool cartaoPresente = false;
-
   unsigned long ultimaLeitura = 0;
-  const unsigned long intervaloAntiRepeticao = 1000; // 1 segundo entre leituras
+  const unsigned long intervaloAntiRepeticao = 1000;
 
   for (;;) {
-
-    // Serial.println("[RFID] Tentando ler...");
-
-    if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
-      ultimaRespostaRFID = millis();
-      String uid = "";
-      for (byte i = 0; i < mfrc522.uid.size; i++) {
-        if (mfrc522.uid.uidByte[i] < 0x10) uid += "0";
-        uid += String(mfrc522.uid.uidByte[i], HEX);
-      }
-      uid.toUpperCase();
-
-      // Prevenção contra leituras repetidas muito rápidas
-      if (millis() - ultimaLeitura > intervaloAntiRepeticao) {
-        ultimaLeitura = millis();
-
-        if (!cartaoPresente) {
-          // Apenas processa quando o cartão for inserido novamente
-          digitalWrite(LED_PIN, HIGH);
-          digitalWrite(BUZZER_PIN, HIGH);
-          delay(50);
-          digitalWrite(BUZZER_PIN, LOW);
-          delay(35);
-          digitalWrite(BUZZER_PIN, HIGH);
-          delay(50);
-          digitalWrite(BUZZER_PIN, LOW);
-
-          Serial.print("🔍 UID lido: ");
-          Serial.println(uid);
-
-          rfidValor = uid;
-          processarCartao(uid);
-          cartaoPresente = true;
+    // ✅ VERIFICAÇÃO MAIS ROBUSTA
+    if (mfrc522.PICC_IsNewCardPresent()) {
+      if (mfrc522.PICC_ReadCardSerial()) {
+        ultimaRespostaRFID = millis();
+        String uid = "";
+        for (byte i = 0; i < mfrc522.uid.size; i++) {
+          if (mfrc522.uid.uidByte[i] < 0x10) uid += "0";
+          uid += String(mfrc522.uid.uidByte[i], HEX);
         }
+        uid.toUpperCase();
+
+        if (millis() - ultimaLeitura > intervaloAntiRepeticao) {
+          ultimaLeitura = millis();
+          
+          if (!cartaoPresente) {
+            digitalWrite(LED_PIN, HIGH);
+            digitalWrite(BUZZER_PIN, HIGH);
+            delay(50);
+            digitalWrite(BUZZER_PIN, LOW);
+            delay(35);
+            digitalWrite(BUZZER_PIN, HIGH);
+            delay(50);
+            digitalWrite(BUZZER_PIN, LOW);
+
+            Serial.print("🔍 UID lido: ");
+            Serial.println(uid);
+
+            processarCartao(uid);
+            cartaoPresente = true;
+          }
+        }
+        mfrc522.PICC_HaltA();
+        mfrc522.PCD_StopCrypto1();
       }
-
-      mfrc522.PICC_HaltA();
-      mfrc522.PCD_StopCrypto1();  // encerra autenticação, libera para próxima leitura
-
     } else {
       if (cartaoPresente) {
         digitalWrite(LED_PIN, LOW);
-        cartaoPresente = false; // Liberar para próxima leitura
-        // Pequeno delay após remover o cartão para evitar leitura fantasma
+        cartaoPresente = false;
         vTaskDelay(300 / portTICK_PERIOD_MS);
       }
     }
 
-    if (millis() - ultimaRespostaRFID > 5000) {
-      Serial.println("[RFID] Nenhuma resposta, reiniciando módulo...");
-      reinicializarRFID();
+    // ✅ VERIFICAÇÃO DE HEALTH DO RFID
+    if (millis() - ultimaRespostaRFID > 3000) {
+      Serial.println("[RFID] Verificando saúde do módulo...");
+      testarRFID();
       ultimaRespostaRFID = millis();
     }
 
@@ -236,12 +230,35 @@ void taskRFID(void* parameter) {
   }
 }
 
+// ✅ FUNÇÃO PARA TESTAR RFID
+void testarRFID() {
+  byte version = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
+  if (version == 0x00 || version == 0xFF) {
+    Serial.println("❌ RFID não responde, reiniciando...");
+    reinicializarRFID();
+  }
+}
+
 //função para resetar o rfid via software
 //tenta acabar com o bug do rfid nao funcionando
 void reinicializarRFID() {
+  Serial.println("🔄 Reinicialização completa do RFID");
+  
+  // Reset hardware
+  digitalWrite(RST_PIN, LOW);
+  delay(10);
+  digitalWrite(RST_PIN, HIGH);
+  delay(50);
+  
+  // Reset software
   mfrc522.PCD_Reset();
   mfrc522.PCD_Init();
-  delay(50);
+  
+  // Reconfigura SPI
+  SPI.begin(14, 12, 13, SS_PIN_RFID);
+  SPI.setFrequency(1000000);
+  
+  Serial.println("✅ RFID reinicializado");
 }
 
 //------------------------------------------------------------------------
@@ -343,15 +360,16 @@ void setup() {
 //------------------------------------------------------------------------
 
 void loop() {
-  // Conexão WiFi em segundo plano - verificação não-bloqueante
+  // Conexão WiFi (mantenha como está)
   if (WiFi.status() != WL_CONNECTED) {
     static unsigned long ultimoCheckWiFi = 0;
-    if (millis() - ultimoCheckWiFi > 15000) { // Verifica a cada 15 segundos
+    if (millis() - ultimoCheckWiFi > 15000) {
       ultimoCheckWiFi = millis();
       Serial.println("📡 WiFi ainda conectando...");
     }
   }
 
+  // Atualização periódica (mantenha como está)
   if (millis() - ultimaAtualizacao > intervaloAtualizacao) {
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("✅ WiFi conectado - atualizando dados...");
@@ -361,28 +379,12 @@ void loop() {
     }
   }
 
-  // if (millis() - ultimaAtualizacao > intervaloAtualizacao) {
-  //   if (WiFi.status() != WL_CONNECTED) {
-  //     Serial.println("🔌 Wi-Fi não conectado. Tentando reconectar...");
-  //     WiFi.begin(ssid, password);
-  //     unsigned long inicio = millis();
-  //     while (WiFi.status() != WL_CONNECTED && millis() - inicio < 10000) {
-  //       delay(500);
-  //       Serial.print(".");
-  //     }
-  //     Serial.println(WiFi.status() == WL_CONNECTED ? "\n✅ Reconectado ao Wi-Fi!" : "\n❌ Falha ao reconectar.");
-  //   }
+  // ✅ PROCESSAMENTO GPS NÃO-BLOQUEANTE
+  processarGPS();
 
-  //   if (WiFi.status() == WL_CONNECTED) {
-  //     Serial.println("✅ WiFi conectado - atualizando dados...");
-  //     atualizarCercas();
-  //     atualizarMotoristas();
-  //     ultimaAtualizacao = millis();
-  //   }
-  // }
-
+  // Controle do LCD e interface
   if (rfidLido) {
-    if (rfidLido && lcdFlag) {
+    if (lcdFlag) {
       delay(50);
       lcd.clear();
       lcd.setCursor(0, 0);
@@ -404,39 +406,6 @@ void loop() {
         lcd.print("km/h");
         Serial.println("✅ Limite carregado do SD na ausência do GPS.");
         limiteCarregadoOffline = true;
-      } else {
-        Serial.println("⚠️ Falha ao carregar limite do SD.");
-      }
-    }
-
-    // ✅ CORREÇÃO: Troque o WHILE por IF para não bloquear o loop
-    if (gpsSerial.available()) {
-      gps.encode(gpsSerial.read());
-      
-      if (gps.location.isUpdated()) {
-        gpsAtivo = true;
-        float lat = gps.location.lat();
-        float lng = gps.location.lng();
-        float vel = gps.speed.kmph();
-        bool chuva = false;
-
-        if (!origemDefinida && gps.location.isValid()) {
-          origemLat = lat;
-          origemLng = lng;
-          origemDefinida = true;
-          Serial.print("✅ Origem registrada: ");
-          Serial.print(origemLat, 6);
-          Serial.print(", ");
-          Serial.println(origemLng, 6);
-        }
-
-        if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
-          Serial.print("Lat: "); Serial.println(lat, 6);
-          Serial.print("Lng: "); Serial.println(lng, 6);
-          ultimaVerificacaoCercas = millis();
-          verificarCercas(lat, lng);
-          registrarPosicao(lat, lng, vel, chuva);
-        }
       }
     }
   } else {
@@ -445,6 +414,41 @@ void loop() {
       lcd.setCursor(0, 0);
       lcd.print("Inicie a Viagem");
       lcdFlag = true;
+    }
+  }
+}
+
+// ✅ NOVA FUNÇÃO: Processamento GPS não-bloqueante
+void processarGPS() {
+  // Processa apenas 1 caractere por vez para não bloquear
+  if (gpsSerial.available()) {
+    char c = gpsSerial.read();
+    gps.encode(c);
+    
+    if (gps.location.isUpdated()) {
+      gpsAtivo = true;
+      float lat = gps.location.lat();
+      float lng = gps.location.lng();
+      float vel = gps.speed.kmph();
+      bool chuva = false;
+
+      if (!origemDefinida && gps.location.isValid()) {
+        origemLat = lat;
+        origemLng = lng;
+        origemDefinida = true;
+        Serial.print("✅ Origem registrada: ");
+        Serial.print(origemLat, 6);
+        Serial.print(", ");
+        Serial.println(origemLng, 6);
+      }
+
+      if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
+        Serial.print("Lat: "); Serial.println(lat, 6);
+        Serial.print("Lng: "); Serial.println(lng, 6);
+        ultimaVerificacaoCercas = millis();
+        verificarCercas(lat, lng);
+        registrarPosicao(lat, lng, vel, chuva);
+      }
     }
   }
 }
