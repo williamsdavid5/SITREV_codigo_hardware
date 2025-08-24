@@ -210,6 +210,8 @@ void taskRFID(void* parameter) {
       }
 
       mfrc522.PICC_HaltA();
+      mfrc522.PCD_StopCrypto1();  // encerra autenticação, libera para próxima leitura
+
     } else {
       if (cartaoPresente) {
         digitalWrite(LED_PIN, LOW);
@@ -265,11 +267,13 @@ void setup() {
   // Iniciar SPI
   SPI.begin(14, 12, 13, SS_PIN_RFID);
   // spiRFID.begin(14, 12, 13, SS_PIN_RFID);
-  mfrc522.PCD_Init();
+  mfrc522.PCD_Init();  
+  mfrc522.PCD_DumpVersionToSerial();
 
   // Serial.println("Conectando ao Wi-Fi...");
+  Serial.println("Iniciando conexão WiFi em segundo plano...");
   WiFi.begin(ssid, password);
-  unsigned long inicioWifi = millis();
+  // unsigned long inicioWifi = millis();
   // while (WiFi.status() != WL_CONNECTED && millis() - inicioWifi < 10000) {
   //   delay(500);
   //   Serial.print(".");
@@ -317,28 +321,45 @@ void setup() {
 //------------------------------------------------------------------------
 
 void loop() {
-  if (millis() - ultimaAtualizacao > intervaloAtualizacao) {
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("🔌 Wi-Fi não conectado. Tentando reconectar...");
-      WiFi.begin(ssid, password);
-      unsigned long inicio = millis();
-      while (WiFi.status() != WL_CONNECTED && millis() - inicio < 10000) {
-        delay(500);
-        Serial.print(".");
-      }
-      Serial.println(WiFi.status() == WL_CONNECTED ? "\n✅ Reconectado ao Wi-Fi!" : "\n❌ Falha ao reconectar.");
+  // Conexão WiFi em segundo plano - verificação não-bloqueante
+  if (WiFi.status() != WL_CONNECTED) {
+    static unsigned long ultimoCheckWiFi = 0;
+    if (millis() - ultimoCheckWiFi > 15000) { // Verifica a cada 15 segundos
+      ultimoCheckWiFi = millis();
+      Serial.println("📡 WiFi ainda conectando...");
     }
-
-    if (WiFi.status() == WL_CONNECTED) {
-      atualizarCercas();
-      atualizarMotoristas();
-    }
-
-    ultimaAtualizacao = millis();
   }
 
-  if (rfidLido) {
+  if (millis() - ultimaAtualizacao > intervaloAtualizacao) {
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("✅ WiFi conectado - atualizando dados...");
+      atualizarCercas();
+      atualizarMotoristas();
+      ultimaAtualizacao = millis();
+    }
+  }
 
+  // if (millis() - ultimaAtualizacao > intervaloAtualizacao) {
+  //   if (WiFi.status() != WL_CONNECTED) {
+  //     Serial.println("🔌 Wi-Fi não conectado. Tentando reconectar...");
+  //     WiFi.begin(ssid, password);
+  //     unsigned long inicio = millis();
+  //     while (WiFi.status() != WL_CONNECTED && millis() - inicio < 10000) {
+  //       delay(500);
+  //       Serial.print(".");
+  //     }
+  //     Serial.println(WiFi.status() == WL_CONNECTED ? "\n✅ Reconectado ao Wi-Fi!" : "\n❌ Falha ao reconectar.");
+  //   }
+
+  //   if (WiFi.status() == WL_CONNECTED) {
+  //     Serial.println("✅ WiFi conectado - atualizando dados...");
+  //     atualizarCercas();
+  //     atualizarMotoristas();
+  //     ultimaAtualizacao = millis();
+  //   }
+  // }
+
+  if (rfidLido) {
     if (rfidLido && lcdFlag) {
       delay(50);
       lcd.clear();
@@ -346,10 +367,8 @@ void loop() {
       lcd.print("Bem vindo(a)");
       lcd.setCursor(0, 1);
       lcd.print(motoristaAtual["nome"].as<const char*>());
-
       iniciarViagem();
       delay(3000);
-
       lcdFlag = false;
     }
 
@@ -361,7 +380,6 @@ void loop() {
         lcd.setCursor(8, 1);
         lcd.print(vel_max);
         lcd.print("km/h");
-
         Serial.println("✅ Limite carregado do SD na ausência do GPS.");
         limiteCarregadoOffline = true;
       } else {
@@ -369,43 +387,37 @@ void loop() {
       }
     }
 
+    // ✅ CORREÇÃO: Troque o WHILE por IF para não bloquear o loop
+    if (gpsSerial.available()) {
+      gps.encode(gpsSerial.read());
+      
+      if (gps.location.isUpdated()) {
+        gpsAtivo = true;
+        float lat = gps.location.lat();
+        float lng = gps.location.lng();
+        float vel = gps.speed.kmph();
+        bool chuva = false;
 
-  while (gpsSerial.available()) {
-    gps.encode(gpsSerial.read());
+        if (!origemDefinida && gps.location.isValid()) {
+          origemLat = lat;
+          origemLng = lng;
+          origemDefinida = true;
+          Serial.print("✅ Origem registrada: ");
+          Serial.print(origemLat, 6);
+          Serial.print(", ");
+          Serial.println(origemLng, 6);
+        }
 
-    if (gps.location.isUpdated()) {
-      gpsAtivo = true;
-
-      float lat = gps.location.lat();
-      float lng = gps.location.lng();
-      float vel = gps.speed.kmph(); // velocidade do obd2
-      bool chuva = false; // sensor IR
-
-      // registra a primeira coordenada recebida do GPS como coordenada de origem
-      if (!origemDefinida && gps.location.isValid()) {
-        origemLat = lat;
-        origemLng = lng;
-        origemDefinida = true;
-
-        Serial.print("✅ Origem registrada: ");
-        Serial.print(origemLat, 6);
-        Serial.print(", ");
-        Serial.println(origemLng, 6);
-
-      }
-
-      if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
-        Serial.print("Lat: "); Serial.println(lat, 6);
-        Serial.print("Lng: "); Serial.println(lng, 6);
-        ultimaVerificacaoCercas = millis();
-
-        verificarCercas(lat, lng);
-        registrarPosicao(lat, lng, vel, chuva);
+        if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
+          Serial.print("Lat: "); Serial.println(lat, 6);
+          Serial.print("Lng: "); Serial.println(lng, 6);
+          ultimaVerificacaoCercas = millis();
+          verificarCercas(lat, lng);
+          registrarPosicao(lat, lng, vel, chuva);
+        }
       }
     }
-  }
   } else {
-
     if (!lcdFlag) {
       lcd.clear();
       lcd.setCursor(0, 0);
