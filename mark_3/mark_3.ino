@@ -219,8 +219,25 @@ void taskRFID(void* parameter) {
       }
     }
 
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    if (millis() - ultimaLeitura > 5000) { // 10s sem resposta
+      resetRFID();
+      ultimaLeitura = millis();
+    }
+
+    vTaskDelay(50 / portTICK_PERIOD_MS);
   }
+}
+
+void resetRFID() {
+  Serial.println("⚠️ Resetando módulo RFID...");
+  digitalWrite(RST_PIN, LOW);
+  delay(50);
+  digitalWrite(RST_PIN, HIGH);
+  delay(50);
+  SPI.end();
+  SPI.begin(14, 12, 13, SS_PIN_RFID); 
+  mfrc522.PCD_Init();  // Re-inicializa o RC522
+  Serial.println("✅ RFID reiniciado.");
 }
 
 //------------------------------------------------------------------------
@@ -235,6 +252,9 @@ void setup() {
   digitalWrite(BUZZER_PIN, LOW);
 
   limiteCarregadoOffline = false;
+
+  pinMode(RST_PIN, OUTPUT);
+  digitalWrite(RST_PIN, HIGH);
 
   gpsSerial.begin(9600, SERIAL_8N1, RX_GPS, TX_GPS);
 
