@@ -219,7 +219,7 @@ void taskRFID(void* parameter) {
       }
     }
 
-    if (millis() - ultimaLeitura > 5000) { // 10s sem resposta
+    if (millis() - ultimaLeitura > 10000) { // 10s sem resposta
       resetRFID();
       ultimaLeitura = millis();
     }
@@ -283,9 +283,20 @@ void setup() {
   lcd.print("Aguarde...");
 
   // Iniciar SPI
+
+  digitalWrite(RST_PIN, LOW);
+  delay(100);
+  digitalWrite(RST_PIN, HIGH);
+  delay(100);
+  mfrc522.PCD_Init();
+
   SPI.begin(14, 12, 13, SS_PIN_RFID);
   // spiRFID.begin(14, 12, 13, SS_PIN_RFID);
+  delay(1000);
   mfrc522.PCD_Init();
+  Serial.print("RFID Version: ");
+  byte v = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
+  Serial.println(v, HEX);
 
   // Serial.println("Conectando ao Wi-Fi...");
   WiFi.begin(ssid, password);
