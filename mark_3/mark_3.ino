@@ -33,9 +33,9 @@ bool gpsAtivo = false;
 //coordenadas de origem
 //necessárias no registro, mas o GPS demora para iniciar
 //isso garante que elas não fiquem vazias
-double origemLat = 0.0;
-double origemLng = 0.0;
-bool origemDefinida = false;
+// double origemLat = 0.0;
+// double origemLng = 0.0;
+// bool origemDefinida = false;
 
 // === LCD ===
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -76,7 +76,7 @@ String ultimoUID = "";
 File arquivoViagem;
 String nomeArquivoViagem = "";
 bool viagemAtiva = false;
-bool primeiroRegistro = true;
+// bool primeiroRegistro = true;
 
 // === ID do Veículo ===
 const int VEICULO_ID = 2;
@@ -174,6 +174,7 @@ void taskRFID(void* parameter) {
   bool cartaoPresente = false;
 
   unsigned long ultimaLeitura = 0;
+  static unsigned long ultimaVerificacao = millis();
   const unsigned long intervaloAntiRepeticao = 1000; // 1 segundo entre leituras
 
   for (;;) {
@@ -224,6 +225,18 @@ void taskRFID(void* parameter) {
       ultimaLeitura = millis();
     }
 
+    // if (millis() - ultimaVerificacao > 10000) { // a cada 10s
+    //   byte ver = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
+    //   Serial.print("RFID Version check: ");
+    //   Serial.println(ver, HEX);
+
+    //   if (ver == 0x00 || ver == 0xFF) {
+    //     Serial.println("⚠️ Versão inválida detectada, resetando RFID...");
+    //     resetRFID();
+    //   }
+    //   ultimaVerificacao = millis();
+    // }
+
     vTaskDelay(50 / portTICK_PERIOD_MS);
   }
 }
@@ -231,13 +244,15 @@ void taskRFID(void* parameter) {
 void resetRFID() {
   Serial.println("⚠️ Resetando módulo RFID...");
   digitalWrite(RST_PIN, LOW);
-  delay(50);
+  delay(100);
   digitalWrite(RST_PIN, HIGH);
-  delay(50);
+  delay(100);
   SPI.end();
   SPI.begin(14, 12, 13, SS_PIN_RFID); 
   mfrc522.PCD_Init();  // Re-inicializa o RC522
-  Serial.println("✅ RFID reiniciado.");
+  byte ver = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
+  Serial.print("RFID Version após reset: ");
+  Serial.println(ver, HEX);
 }
 
 //------------------------------------------------------------------------
@@ -255,6 +270,7 @@ void setup() {
 
   pinMode(RST_PIN, OUTPUT);
   digitalWrite(RST_PIN, HIGH);
+  delay(3000);
 
   gpsSerial.begin(9600, SERIAL_8N1, RX_GPS, TX_GPS);
 
@@ -282,18 +298,17 @@ void setup() {
   lcd.setCursor(0, 1);
   lcd.print("Aguarde...");
 
-  // Iniciar SPI
-
+  // Iniciar SPI do rfid
   digitalWrite(RST_PIN, LOW);
-  delay(100);
+  delay(200);
   digitalWrite(RST_PIN, HIGH);
-  delay(100);
-  mfrc522.PCD_Init();
+  delay(200);
+  // delay(3000);
 
   SPI.begin(14, 12, 13, SS_PIN_RFID);
   // spiRFID.begin(14, 12, 13, SS_PIN_RFID);
-  delay(1000);
   mfrc522.PCD_Init();
+  delay(1000);
   Serial.print("RFID Version: ");
   byte v = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
   Serial.println(v, HEX);
@@ -413,17 +428,17 @@ void loop() {
       bool chuva = false; // sensor IR
 
       // registra a primeira coordenada recebida do GPS como coordenada de origem
-      if (!origemDefinida && gps.location.isValid()) {
-        origemLat = lat;
-        origemLng = lng;
-        origemDefinida = true;
+      // if (!origemDefinida && gps.location.isValid()) {
+      //   origemLat = lat;
+      //   origemLng = lng;
+      //   origemDefinida = true;
 
-        Serial.print("✅ Origem registrada: ");
-        Serial.print(origemLat, 6);
-        Serial.print(", ");
-        Serial.println(origemLng, 6);
+      //   Serial.print("✅ Origem registrada: ");
+      //   Serial.print(origemLat, 6);
+      //   Serial.print(", ");
+      //   Serial.println(origemLng, 6);
 
-      }
+      // }
 
       if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
         Serial.print("Lat: "); Serial.println(lat, 6);
@@ -922,9 +937,9 @@ void encerrarViagem() {
   arquivoViagem.print("{\"fim\":\"");
   arquivoViagem.print(getTimestamp());
   arquivoViagem.print("\",\"dest_lat\":");
-  arquivoViagem.print(gps.location.isValid() ? gps.location.lat() : origemLat, 6);
+  arquivoViagem.print(gps.location.isValid() ? gps.location.lat() : 0.0, 6);
   arquivoViagem.print(",\"dest_lng\":");
-  arquivoViagem.print(gps.location.isValid() ? gps.location.lng() : origemLng, 6);
+  arquivoViagem.print(gps.location.isValid() ? gps.location.lng() : 0.0, 6);
   arquivoViagem.print("}");
   arquivoViagem.println();
   
@@ -935,7 +950,7 @@ void encerrarViagem() {
   delay(10);
   
   viagemAtiva = false;
-  origemDefinida = false;
+  // origemDefinida = false;
   Serial.println("✅ Viagem encerrada");
 }
 
