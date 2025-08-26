@@ -220,10 +220,10 @@ void taskRFID(void* parameter) {
       }
     }
 
-    if (millis() - ultimaLeitura > 10000) { // 10s sem resposta
-      resetRFID();
-      ultimaLeitura = millis();
-    }
+    // if (millis() - ultimaLeitura > 10000) { // 10s sem resposta
+    //   resetRFID();
+    //   ultimaLeitura = millis();
+    // }
 
     // if (millis() - ultimaVerificacao > 10000) { // a cada 10s
     //   byte ver = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
@@ -241,19 +241,19 @@ void taskRFID(void* parameter) {
   }
 }
 
-void resetRFID() {
-  Serial.println("⚠️ Resetando módulo RFID...");
-  digitalWrite(RST_PIN, LOW);
-  delay(100);
-  digitalWrite(RST_PIN, HIGH);
-  delay(100);
-  SPI.end();
-  SPI.begin(14, 12, 13, SS_PIN_RFID); 
-  mfrc522.PCD_Init();  // Re-inicializa o RC522
-  byte ver = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
-  Serial.print("RFID Version após reset: ");
-  Serial.println(ver, HEX);
-}
+// void resetRFID() {
+//   Serial.println("⚠️ Resetando módulo RFID...");
+//   digitalWrite(RST_PIN, LOW);
+//   delay(100);
+//   digitalWrite(RST_PIN, HIGH);
+//   delay(100);
+//   SPI.end();
+//   SPI.begin(14, 12, 13, SS_PIN_RFID); 
+//   mfrc522.PCD_Init();  // Re-inicializa o RC522
+//   byte ver = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
+//   Serial.print("RFID Version após reset: ");
+//   Serial.println(ver, HEX);
+// }
 
 //------------------------------------------------------------------------
 
