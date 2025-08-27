@@ -851,10 +851,13 @@ void recuperarViagemInterrompida() {
     return;
   }
   
-  // Copiar conteúdo
+  // Copiar conteúdo existente
   while (viagemAtual.available()) {
     arquivoDestino.write(viagemAtual.read());
   }
+  
+  // Adicionar apenas a marcação de recuperado no final
+  arquivoDestino.print("{\"recuperado\":true}\n");
   
   arquivoDestino.close();
   viagemAtual.close();
@@ -864,11 +867,6 @@ void recuperarViagemInterrompida() {
   
   Serial.println("✅ Viagem recuperada: " + nomeRecuperado);
   viagemRecuperada = true;
-  
-  // Pequeno delay para mostrar mensagem no LCD
-  lcd.clear();
-  lcd.print("Viagem recuperada!");
-  delay(2000);
 }
 
 
