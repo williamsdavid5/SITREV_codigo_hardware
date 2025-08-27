@@ -30,13 +30,6 @@ TinyGPSPlus gps;
 
 bool gpsAtivo = false;
 
-//coordenadas de origem
-//necessárias no registro, mas o GPS demora para iniciar
-//isso garante que elas não fiquem vazias
-// double origemLat = 0.0;
-// double origemLng = 0.0;
-// bool origemDefinida = false;
-
 // === LCD ===
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 boolean lcdFlag = false; //flag para controlar a impressão no lcd
@@ -80,15 +73,11 @@ bool viagemAtiva = false;
 
 // === ID do Veículo ===
 const int VEICULO_ID = 2;
-const String VEICULO_IDENTIFICADOR = "VEICULO_2";
-const String VEICULO_MODELO = "Toyota Hilux";
 
 //prototipo das funções
 void verificarMotoristaPorRFID();
 void salvarUltimoLimite();
 void encerrarViagem(float destinoLat, float destinoLng);
-
-
 
 unsigned long ultimaLeituraRFID = 0;
 const unsigned long DEBOUNCE_RFID = 1000;
@@ -220,40 +209,9 @@ void taskRFID(void* parameter) {
       }
     }
 
-    // if (millis() - ultimaLeitura > 10000) { // 10s sem resposta
-    //   resetRFID();
-    //   ultimaLeitura = millis();
-    // }
-
-    // if (millis() - ultimaVerificacao > 10000) { // a cada 10s
-    //   byte ver = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
-    //   Serial.print("RFID Version check: ");
-    //   Serial.println(ver, HEX);
-
-    //   if (ver == 0x00 || ver == 0xFF) {
-    //     Serial.println("⚠️ Versão inválida detectada, resetando RFID...");
-    //     resetRFID();
-    //   }
-    //   ultimaVerificacao = millis();
-    // }
-
     vTaskDelay(50 / portTICK_PERIOD_MS);
   }
 }
-
-// void resetRFID() {
-//   Serial.println("⚠️ Resetando módulo RFID...");
-//   digitalWrite(RST_PIN, LOW);
-//   delay(100);
-//   digitalWrite(RST_PIN, HIGH);
-//   delay(100);
-//   SPI.end();
-//   SPI.begin(14, 12, 13, SS_PIN_RFID); 
-//   mfrc522.PCD_Init();  // Re-inicializa o RC522
-//   byte ver = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
-//   Serial.print("RFID Version após reset: ");
-//   Serial.println(ver, HEX);
-// }
 
 //------------------------------------------------------------------------
 
@@ -316,12 +274,6 @@ void setup() {
   // Serial.println("Conectando ao Wi-Fi...");
   WiFi.begin(ssid, password);
   unsigned long inicioWifi = millis();
-  // while (WiFi.status() != WL_CONNECTED && millis() - inicioWifi < 10000) {
-  //   delay(500);
-  //   Serial.print(".");
-  // }
-
-  // Serial.println(WiFi.status() == WL_CONNECTED ? "\nWi-Fi conectado!" : "\n⚠️ Wi-Fi não disponível. Usando dados locais.");
 
   // Inicia SD no HSPI (pinos 25,26,21,33)
   spiSD.begin(25, 26, 21, SD_CS);
@@ -427,19 +379,6 @@ void loop() {
       float vel = gps.speed.kmph(); // velocidade do obd2
       bool chuva = false; // sensor IR
 
-      // registra a primeira coordenada recebida do GPS como coordenada de origem
-      // if (!origemDefinida && gps.location.isValid()) {
-      //   origemLat = lat;
-      //   origemLng = lng;
-      //   origemDefinida = true;
-
-      //   Serial.print("✅ Origem registrada: ");
-      //   Serial.print(origemLat, 6);
-      //   Serial.print(", ");
-      //   Serial.println(origemLng, 6);
-
-      // }
-
       if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
         Serial.print("Lat: "); Serial.println(lat, 6);
         Serial.print("Lng: "); Serial.println(lng, 6);
@@ -461,8 +400,7 @@ void loop() {
   }
 }
 
-//------------------------------------------------------------------------
-
+// lógicas para motoristas e cercas ------------------------------------------------------------------------
 void atualizarCercas() {
   WiFiClientSecure client;
   client.setInsecure();
@@ -701,6 +639,8 @@ bool validarEstruturaJSON(const char* path) {
 
   return (chaves == 0 && colchetes == 0);  // JSON bem balanceado
 }
+
+// lógicas para viajems ------------------------------------------------------------------------------------
 
 // para salvar o ultimo limite no cartão sd
 // para resolver o problema da demora de inicialização do gps
@@ -950,7 +890,6 @@ void encerrarViagem() {
   delay(10);
   
   viagemAtiva = false;
-  // origemDefinida = false;
   Serial.println("✅ Viagem encerrada");
 }
 
