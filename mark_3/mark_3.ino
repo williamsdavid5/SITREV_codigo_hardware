@@ -19,7 +19,7 @@ SPIClass spiSD(HSPI);
 bool limiteCarregadoOffline = false; //controle do limite carregado offline
 //para controlar quando o gps nao funciona e precisamos de um limite offline
 //ela evita que o sistema tente carregar repetidamente o limite do cartão
-StaticJsonDocument<512> motoristaAtual;
+StaticJsonDocument<256> motoristaAtual;
 bool motoristaEncontrado = false;
 
 // === GPS ===
@@ -73,6 +73,13 @@ bool viagemAtiva = false;
 
 // === ID do Veículo ===
 const int VEICULO_ID = 2;
+
+// vairáveis para a lógica de registro e recuperação de viajens não encerradas
+const String ARQUIVO_VIAGEM_ATUAL = "/viagem_atual.json";
+bool viagemRecuperada = false;
+
+//para as funções de escrita e leitura de registros
+char jsonBuffer[256];
 
 //prototipo das funções
 void verificarMotoristaPorRFID();
@@ -292,6 +299,11 @@ void setup() {
     Serial.println("📁 Diretório /viagens criado");
   }
 
+  if (SD.exists(ARQUIVO_VIAGEM_ATUAL)) {
+    Serial.println("⚠️ Viagem em andamento encontrada. Recuperando...");
+    recuperarViagemInterrompida();
+  }
+
   // if (WiFi.status() == WL_CONNECTED) {
   //   atualizarCercas();
   //   atualizarMotoristas();
@@ -397,6 +409,16 @@ void loop() {
       lcd.print("Inicie a Viagem");
       lcdFlag = true;
     }
+  }
+
+  //salvamento automatico que independe do gps
+  //o salvamento antigo só era feito ao registrar uma nova posição
+  //agora é feito independente do sinal do gps
+  static unsigned long ultimoSave = 0;
+  if (viagemAtiva && millis() - ultimoSave > 30000) {
+    arquivoViagem.flush();
+    ultimoSave = millis();
+    Serial.println("💾 Dados da viagem salvos (auto-salvamento)");
   }
 }
 
@@ -561,7 +583,7 @@ void verificarMotoristaPorRFID() {
     return;
   }
 
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<256> doc;
 
   while (file.available()) {
     DeserializationError err = deserializeJson(doc, file);
@@ -697,7 +719,7 @@ void verificarCercas(float lat, float lng) {
     return;
   }
 
-  StaticJsonDocument<2048> doc;
+  StaticJsonDocument<1024> doc;
   bool encontrouAlguma = false;
 
   int menorVelMax = 999;         // Inicializa com valor alto
@@ -781,19 +803,17 @@ void verificarCercas(float lat, float lng) {
 }
 
 bool dentroDoPoligono(float x, float y, JsonArray coords) {
-  int i, j, n = coords.size();
   bool dentro = false;
-
-  for (i = 0, j = n - 1; i < n; j = i++) {
+  int n = coords.size();
+  
+  for (int i = 0, j = n - 1; i < n; j = i++) {
     float xi = atof(coords[i][0]), yi = atof(coords[i][1]);
     float xj = atof(coords[j][0]), yj = atof(coords[j][1]);
-
-    if (((yi > y) != (yj > y)) &&
-        (x < (xj - xi) * (y - yi) / (yj - yi + 1e-9) + xi)) {
+    
+    if (((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
       dentro = !dentro;
     }
   }
-
   return dentro;
 }
 
@@ -813,81 +833,112 @@ String getTimestamp() {
   return "0000-00-00T00:00:00Z";
 }
 
-void iniciarViagem() {
-  delay(50);
+//par recuperar viagens não finalizadas
+void recuperarViagemInterrompida() {
+  File viagemAtual = SD.open(ARQUIVO_VIAGEM_ATUAL, FILE_READ);
+  if (!viagemAtual) {
+    Serial.println("❌ Erro ao abrir viagem em andamento");
+    return;
+  }
   
-  nomeArquivoViagem = "/viagens/viagem_" + String(millis()) + ".json";
-  arquivoViagem = SD.open(nomeArquivoViagem, FILE_WRITE);
+  // Gerar nome único para o arquivo recuperado
+  String nomeRecuperado = "/viagens/recuperada_" + String(millis()) + ".json";
+  
+  File arquivoDestino = SD.open(nomeRecuperado, FILE_WRITE);
+  if (!arquivoDestino) {
+    Serial.println("❌ Erro ao criar arquivo de recuperação");
+    viagemAtual.close();
+    return;
+  }
+  
+  // Copiar conteúdo
+  while (viagemAtual.available()) {
+    arquivoDestino.write(viagemAtual.read());
+  }
+  
+  arquivoDestino.close();
+  viagemAtual.close();
+  
+  // Remover arquivo temporário
+  SD.remove(ARQUIVO_VIAGEM_ATUAL);
+  
+  Serial.println("✅ Viagem recuperada: " + nomeRecuperado);
+  viagemRecuperada = true;
+  
+  // Pequeno delay para mostrar mensagem no LCD
+  lcd.clear();
+  lcd.print("Viagem recuperada!");
+  delay(2000);
+}
 
+
+void iniciarViagem() {
+  // Usar arquivo temporário na raiz
+  nomeArquivoViagem = ARQUIVO_VIAGEM_ATUAL;
+  
+  arquivoViagem = SD.open(nomeArquivoViagem, FILE_WRITE);
   if (!arquivoViagem) {
     Serial.println("❌ Erro ao criar arquivo de viagem");
     return;
   }
   
-  // Cabeçalho simplificado - primeira linha
-  arquivoViagem.print("{\"motorista_id\":");
-  arquivoViagem.print(motoristaAtual["id"].as<int>());
-  arquivoViagem.print(",\"veiculo_id\":");
-  arquivoViagem.print(VEICULO_ID);
-  arquivoViagem.print(",\"inicio\":\"");
-  arquivoViagem.print(getTimestamp());
-  arquivoViagem.print("\"}");
-  arquivoViagem.println(); // Nova linha para o próximo registro
+  snprintf(jsonBuffer, sizeof(jsonBuffer),
+           "{\"motorista_id\":%d,\"veiculo_id\":%d,\"inicio\":\"%s\"}\n",
+           motoristaAtual["id"].as<int>(),
+           VEICULO_ID,
+           getTimestamp().c_str());
   
+  arquivoViagem.print(jsonBuffer);
   arquivoViagem.flush();
-  delay(10);
   
   viagemAtiva = true;
-  Serial.println("✅ Cabeçalho da viagem criado");
+  Serial.println("✅ Viagem iniciada (armazenamento temporário)");
 }
 
 void registrarPosicao(float lat, float lng, float vel, bool chuva) {
   if (!viagemAtiva) return;
   
-  delay(10);
+  // Uma única escrita otimizada
+  snprintf(jsonBuffer, sizeof(jsonBuffer),
+           "{\"timestamp\":\"%s\",\"lat\":%.6f,\"lng\":%.6f,\"vel\":%.2f,\"chuva\":%s,\"lim_seco\":%d,\"lim_chuva\":%d}\n",
+           getTimestamp().c_str(),
+           lat, lng, vel,
+           chuva ? "true" : "false",
+           vel_max, vel_max_chuva);
   
-  arquivoViagem.print("{\"timestamp\":\"");
-  arquivoViagem.print(getTimestamp());
-  arquivoViagem.print("\",\"lat\":");
-  arquivoViagem.print(lat, 6);
-  arquivoViagem.print(",\"lng\":");
-  arquivoViagem.print(lng, 6);
-  arquivoViagem.print(",\"vel\":");
-  arquivoViagem.print(vel, 2);
-  arquivoViagem.print(",\"chuva\":");
-  arquivoViagem.print(chuva ? "true" : "false");
-  arquivoViagem.print(",\"lim_seco\":");
-  arquivoViagem.print(vel_max);
-  arquivoViagem.print(",\"lim_chuva\":");
-  arquivoViagem.print(vel_max_chuva);
-  arquivoViagem.print("}");
-  arquivoViagem.println(); // Nova linha para o próximo registro
-  
+  arquivoViagem.print(jsonBuffer);
   arquivoViagem.flush();
+  
   salvarUltimoLimite();
-  delay(10);
 }
 
 void encerrarViagem() {
   if (!viagemAtiva) return;
-
-  delay(20);
   
-  // Última linha com coordenadas finais
-  arquivoViagem.print("{\"fim\":\"");
-  arquivoViagem.print(getTimestamp());
-  arquivoViagem.print("\",\"dest_lat\":");
-  arquivoViagem.print(gps.location.isValid() ? gps.location.lat() : 0.0, 6);
-  arquivoViagem.print(",\"dest_lng\":");
-  arquivoViagem.print(gps.location.isValid() ? gps.location.lng() : 0.0, 6);
-  arquivoViagem.print("}");
-  arquivoViagem.println();
+  float dest_lat = gps.location.isValid() ? gps.location.lat() : 0.0;
+  float dest_lng = gps.location.isValid() ? gps.location.lng() : 0.0;
   
+  snprintf(jsonBuffer, sizeof(jsonBuffer),
+           "{\"fim\":\"%s\",\"dest_lat\":%.6f,\"dest_lng\":%.6f}\n",
+           getTimestamp().c_str(),
+           dest_lat, dest_lng);
+  
+  arquivoViagem.print(jsonBuffer);
   arquivoViagem.flush();
-  delay(20);
-  
   arquivoViagem.close();
-  delay(10);
+  
+  // Gerar nome único para a viagem finalizada
+  String novoNome = "/viagens/viagem_" + String(millis()) + ".json";
+  
+  // Mover arquivo para a pasta de viagens
+  if (SD.rename(ARQUIVO_VIAGEM_ATUAL, novoNome)) {
+    Serial.println("✅ Viagem movida para: " + novoNome);
+  } else {
+    Serial.println("❌ Erro ao mover viagem para pasta");
+    // Manter o arquivo na raiz com nome diferente para evitar perda
+    String nomeAlternativo = "/viagem_finalizada_" + String(millis()) + ".json";
+    SD.rename(ARQUIVO_VIAGEM_ATUAL, nomeAlternativo);
+  }
   
   viagemAtiva = false;
   Serial.println("✅ Viagem encerrada");
