@@ -45,7 +45,7 @@ const char* apiMotoristas = "https://telemetria-fvv4.onrender.com/motoristas/lim
 unsigned long ultimaAtualizacao = 0;
 const unsigned long intervaloAtualizacao = 5 * 60 * 1000; // 5 minutos
 unsigned long ultimaVerificacaoCercas = 0;
-const unsigned long intervaloVerificacaoCercas = 5000; // 5 segundos
+const unsigned long intervaloVerificacaoCercas = 15000; // 5 segundos
 
 int vel_max;
 int vel_max_chuva;
@@ -60,6 +60,7 @@ SPIClass spiRFID(VSPI);  // VSPI para RFID
 boolean rfidLido = false;
 String rfidValor;
 String ultimoUID = "";
+unsigned long viagemId = 0;
 
 #define LED_PIN 2  // LED embutido do ESP32
 #define BUZZER_PIN 17
@@ -75,7 +76,7 @@ bool viagemAtiva = false;
 const int VEICULO_ID = 2;
 
 // vairáveis para a lógica de registro e recuperação de viajens não encerradas
-const String ARQUIVO_VIAGEM_ATUAL = "/viagem_atual.json";
+const String ARQUIVO_VIAGEM_ATUAL = "/viagem_atual.tmp";
 bool viagemRecuperada = false;
 
 //para as funções de escrita e leitura de registros
@@ -123,6 +124,7 @@ void processarCartao(String uid) {
       salvarUltimoLimite();
       motoristaEncontrado = false;
       ultimoUID = "";
+      viagemId = 0;
       lcd.clear();
       lcd.print("Viagem encerrada");
       Serial.println("🛑 Viagem encerrada");
@@ -424,6 +426,7 @@ void loop() {
 
 // lógicas para motoristas e cercas ------------------------------------------------------------------------
 void atualizarCercas() {
+  Serial.println("🔄 Atualizando lista de cercas...");
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient https;
@@ -498,6 +501,7 @@ void atualizarCercas() {
 }
 
 void atualizarMotoristas() {
+  Serial.println("🔄 Atualizando lista de motoristas...");
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient https;
@@ -818,6 +822,7 @@ bool dentroDoPoligono(float x, float y, JsonArray coords) {
 }
 
 // Funções para a lógica de registrar as posições --------------------------------------------------
+
 String getTimestamp() {
   if (gps.date.isValid() && gps.time.isValid()) {
     char buffer[25];
@@ -833,46 +838,105 @@ String getTimestamp() {
   return "0000-00-00T00:00:00Z";
 }
 
+unsigned long gerarIdUnico() {
+    // Combina chip ID + timestamp + valor aleatório
+    uint64_t chipId = ESP.getEfuseMac();
+    uint32_t timestamp = millis();
+    uint32_t randomVal = esp_random();
+    
+    unsigned long idUnico = ((chipId >> 32) ^ (chipId & 0xFFFFFFFF) ^ timestamp ^ randomVal);
+    
+    return idUnico;
+}
+
 //par recuperar viagens não finalizadas
 void recuperarViagemInterrompida() {
-  File viagemAtual = SD.open(ARQUIVO_VIAGEM_ATUAL, FILE_READ);
-  if (!viagemAtual) {
+  File root = SD.open("/");
+  String arquivoEncontrado = "";
+  
+  // Procurar por arquivos de viagem na raiz
+  while (true) {
+    File entry = root.openNextFile();
+    if (!entry) break;
+    
+    String nomeArquivo = String(entry.name());
+    if (nomeArquivo.startsWith("/viagem_") && nomeArquivo.endsWith(".json")) {
+      arquivoEncontrado = nomeArquivo;
+      entry.close();
+      break;
+    }
+    entry.close();
+  }
+  root.close();
+  
+  if (arquivoEncontrado == "") {
+    Serial.println("❌ Nenhum arquivo de viagem encontrado para recuperar");
+    return;
+  }
+  
+  File viagemFile = SD.open(arquivoEncontrado, FILE_READ);
+  if (!viagemFile) {
     Serial.println("❌ Erro ao abrir viagem em andamento");
     return;
   }
   
-  // Gerar nome único para o arquivo recuperado
-  String nomeRecuperado = "/viagens/recuperada_" + String(millis()) + ".json";
+  // Tentar extrair o ID da viagem
+  unsigned long idExistente = 0;
+  String primeiraLinha = viagemFile.readStringUntil('\n');
+  viagemFile.close();
   
-  File arquivoDestino = SD.open(nomeRecuperado, FILE_WRITE);
-  if (!arquivoDestino) {
-    Serial.println("❌ Erro ao criar arquivo de recuperação");
-    viagemAtual.close();
-    return;
+  int inicioId = primeiraLinha.indexOf("\"viagem_id\":");
+  if (inicioId != -1) {
+    inicioId += 12;
+    int fimId = primeiraLinha.indexOf(",", inicioId);
+    if (fimId == -1) fimId = primeiraLinha.indexOf("}", inicioId);
+    
+    if (fimId != -1) {
+      String idStr = primeiraLinha.substring(inicioId, fimId);
+      idExistente = idStr.toInt();
+    }
   }
   
-  // Copiar conteúdo existente
-  while (viagemAtual.available()) {
-    arquivoDestino.write(viagemAtual.read());
+  // Se não encontrou ID, tentar extrair do nome do arquivo
+  if (idExistente == 0) {
+    int inicio = arquivoEncontrado.indexOf("_") + 1;
+    int fim = arquivoEncontrado.indexOf(".");
+    if (inicio != -1 && fim != -1) {
+      String idStr = arquivoEncontrado.substring(inicio, fim);
+      idExistente = idStr.toInt();
+    }
   }
   
-  // Adicionar apenas a marcação de recuperado no final
-  arquivoDestino.print("{\"recuperado\":true}\n");
+  // Se ainda não encontrou, gerar novo ID
+  if (idExistente == 0) {
+    idExistente = gerarIdUnico();
+  }
   
-  arquivoDestino.close();
-  viagemAtual.close();
+  viagemId = idExistente;
+  nomeArquivoViagem = arquivoEncontrado;
+  viagemAtiva = true;
   
-  // Remover arquivo temporário
-  SD.remove(ARQUIVO_VIAGEM_ATUAL);
+  Serial.print("✅ Viagem recuperada - ID: ");
+  Serial.print(viagemId);
+  Serial.print(", Arquivo: ");
+  Serial.println(nomeArquivoViagem);
   
-  Serial.println("✅ Viagem recuperada: " + nomeRecuperado);
-  viagemRecuperada = true;
+  // Reabrir o arquivo para continuar escrevendo
+  arquivoViagem = SD.open(nomeArquivoViagem, FILE_APPEND);
+  if (!arquivoViagem) {
+    Serial.println("❌ Erro ao reabrir arquivo de viagem");
+    viagemAtiva = false;
+    nomeArquivoViagem = "";
+    viagemId = 0;
+  }
 }
 
-
 void iniciarViagem() {
-  // Usar arquivo temporário na raiz
-  nomeArquivoViagem = ARQUIVO_VIAGEM_ATUAL;
+  // Gerar ID único inteiro para a viagem
+  viagemId = gerarIdUnico();
+  
+  // Usar arquivo TEMPORÁRIO mas com extensão .json desde o início
+  nomeArquivoViagem = "/viagem_" + String(viagemId) + ".json";
   
   arquivoViagem = SD.open(nomeArquivoViagem, FILE_WRITE);
   if (!arquivoViagem) {
@@ -880,8 +944,10 @@ void iniciarViagem() {
     return;
   }
   
+  // Escrever cabeçalho com ID único
   snprintf(jsonBuffer, sizeof(jsonBuffer),
-           "{\"motorista_id\":%d,\"veiculo_id\":%d,\"inicio\":\"%s\"}\n",
+           "{\"viagem_id\":%lu,\"motorista_id\":%d,\"veiculo_id\":%d,\"inicio\":\"%s\"}\n",
+           viagemId,
            motoristaAtual["id"].as<int>(),
            VEICULO_ID,
            getTimestamp().c_str());
@@ -890,7 +956,11 @@ void iniciarViagem() {
   arquivoViagem.flush();
   
   viagemAtiva = true;
-  Serial.println("✅ Viagem iniciada (armazenamento temporário)");
+  Serial.print("✅ Viagem iniciada (ID: ");
+  Serial.print(viagemId);
+  Serial.print(", Arquivo: ");
+  Serial.print(nomeArquivoViagem);
+  Serial.println(")");
 }
 
 void registrarPosicao(float lat, float lng, float vel, bool chuva) {
@@ -911,7 +981,7 @@ void registrarPosicao(float lat, float lng, float vel, bool chuva) {
 }
 
 void encerrarViagem() {
-  if (!viagemAtiva) return;
+  if (!viagemAtiva || nomeArquivoViagem == "") return;
   
   float dest_lat = gps.location.isValid() ? gps.location.lat() : 0.0;
   float dest_lng = gps.location.isValid() ? gps.location.lng() : 0.0;
@@ -925,20 +995,26 @@ void encerrarViagem() {
   arquivoViagem.flush();
   arquivoViagem.close();
   
-  // Gerar nome único para a viagem finalizada
-  String novoNome = "/viagens/viagem_" + String(millis()) + ".json";
-  
-  // Mover arquivo para a pasta de viagens
-  if (SD.rename(ARQUIVO_VIAGEM_ATUAL, novoNome)) {
-    Serial.println("✅ Viagem movida para: " + novoNome);
+  // Verificar se o arquivo já está na pasta viagens
+  if (!nomeArquivoViagem.startsWith("/viagens/")) {
+    // Mover arquivo para a pasta de viagens
+    String novoNome = "/viagens/viagem_" + String(viagemId) + ".json";
+    
+    if (SD.rename(nomeArquivoViagem, novoNome)) {
+      Serial.print("✅ Viagem movida para: ");
+      Serial.println(novoNome);
+    } else {
+      Serial.print("⚠️ Não foi possível mover, mantendo em: ");
+      Serial.println(nomeArquivoViagem);
+    }
   } else {
-    Serial.println("❌ Erro ao mover viagem para pasta");
-    // Manter o arquivo na raiz com nome diferente para evitar perda
-    String nomeAlternativo = "/viagem_finalizada_" + String(millis()) + ".json";
-    SD.rename(ARQUIVO_VIAGEM_ATUAL, nomeAlternativo);
+    Serial.print("✅ Viagem finalizada em: ");
+    Serial.println(nomeArquivoViagem);
   }
   
   viagemAtiva = false;
+  nomeArquivoViagem = "";
+  viagemId = 0;
   Serial.println("✅ Viagem encerrada");
 }
 
