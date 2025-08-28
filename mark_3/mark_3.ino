@@ -124,7 +124,7 @@ void processarCartao(String uid) {
       salvarUltimoLimite();
       motoristaEncontrado = false;
       ultimoUID = "";
-      viagemId = 0;
+      // viagemId = 0;
       lcd.clear();
       lcd.print("Viagem encerrada");
       Serial.println("🛑 Viagem encerrada");
@@ -937,6 +937,7 @@ void iniciarViagem() {
   
   // Usar arquivo TEMPORÁRIO mas com extensão .json desde o início
   nomeArquivoViagem = "/viagem_" + String(viagemId) + ".json";
+  Serial.print(nomeArquivoViagem);
   
   arquivoViagem = SD.open(nomeArquivoViagem, FILE_WRITE);
   if (!arquivoViagem) {
