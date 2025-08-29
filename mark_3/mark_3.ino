@@ -1000,36 +1000,68 @@ void registrarPosicao(float lat, float lng, float vel, bool chuva) {
 }
 
 void encerrarViagem() {
-  if (!viagemAtiva || nomeArquivoViagem == "") return;
+  if (!viagemAtiva || nomeArquivoViagem == "") {
+    Serial.println("❌ Viagem não está ativa para encerrar");
+    return;
+  }
 
-  float dest_lat = gps.location.isValid() ? gps.location.lat() : 0.0;
-  float dest_lng = gps.location.isValid() ? gps.location.lng() : 0.0;
+  // Verificar se o arquivo ainda está aberto e válido
+  if (!arquivoViagem) {
+    Serial.println("❌ Arquivo de viagem não está aberto");
+    viagemAtiva = false;
+    return;
+  }
 
-  snprintf(jsonBuffer, sizeof(jsonBuffer),
-    "],\"fim\":\"%s\",\"dest_lat\":%.6f,\"dest_lng\":%.6f}\n",
-    getTimestamp().c_str(),
-    dest_lat, dest_lng
-  );
+  Serial.println("🔄 Finalizando viagem...");
 
-  arquivoViagem.print(jsonBuffer);
+  // Registrar última posição apenas se o GPS estiver ativo
+  if (gps.location.isValid()) {
+    float lat = gps.location.lat();
+    float lng = gps.location.lng();
+    float vel = gps.speed.isValid() ? gps.speed.kmph() : 0.0;
+    
+    if (!primeiroRegistro) {
+      arquivoViagem.print(",\n");
+    } else {
+      primeiroRegistro = false;
+    }
+
+    snprintf(jsonBuffer, sizeof(jsonBuffer),
+      "{\"timestamp\":\"%s\",\"lat\":%.6f,\"lng\":%.6f,"
+      "\"vel\":%.2f,\"chuva\":false,\"lim_seco\":%d,\"lim_chuva\":%d}",
+      getTimestamp().c_str(),
+      lat, lng, vel,
+      vel_max, vel_max_chuva
+    );
+
+    arquivoViagem.print(jsonBuffer);
+    arquivoViagem.flush();
+    Serial.println("✅ Última posição registrada");
+  }
+
+  // Fechar o JSON
+  arquivoViagem.print("]}");
   arquivoViagem.flush();
   arquivoViagem.close();
+  Serial.println("✅ JSON fechado");
 
-  // mover de /pendente para /viagens
+  // Mover arquivo
   String novoNome = "/viagens/viagem_" + String(viagemId) + ".json";
   if (SD.rename(nomeArquivoViagem, novoNome)) {
     Serial.print("✅ Viagem movida para: ");
     Serial.println(novoNome);
   } else {
-    Serial.print("⚠️ Não foi possível mover, mantendo em: ");
+    Serial.print("❌ Erro ao mover, mantendo em: ");
     Serial.println(nomeArquivoViagem);
   }
 
+  // Resetar variáveis
   viagemAtiva = false;
   nomeArquivoViagem = "";
   viagemId = 0;
   primeiroRegistro = true;
-  Serial.println("✅ Viagem encerrada");
+  
+  Serial.println("✅ Viagem encerrada com sucesso");
 }
 
 
