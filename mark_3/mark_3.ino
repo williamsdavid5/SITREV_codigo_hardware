@@ -301,9 +301,31 @@ void setup() {
     Serial.println("📁 Diretório /viagens criado");
   }
 
-  if (SD.exists(ARQUIVO_VIAGEM_ATUAL)) {
-    Serial.println("⚠️ Viagem em andamento encontrada. Recuperando...");
-    recuperarViagemInterrompida();
+  if (!SD.exists("/pendente")) {
+    SD.mkdir("/pendente");
+    Serial.println("📁 Diretório /pendente criado");
+  }
+
+  // Verificar se há viagens pendentes para recuperar
+  File pendenteDir = SD.open("/pendente");
+  if (pendenteDir && pendenteDir.isDirectory()) {
+      bool temArquivos = false;
+      while (true) {
+          File entry = pendenteDir.openNextFile();
+          if (!entry) break;
+          if (!entry.isDirectory() && String(entry.name()).endsWith(".json")) {
+              temArquivos = true;
+              entry.close();
+              break;
+          }
+          entry.close();
+      }
+      pendenteDir.close();
+      
+      if (temArquivos) {
+          Serial.println("⚠️ Viagens pendentes encontradas. Recuperando...");
+          recuperarViagemInterrompida();
+      }
   }
 
   // if (WiFi.status() == WL_CONNECTED) {
@@ -850,174 +872,169 @@ unsigned long gerarIdUnico() {
 }
 
 //par recuperar viagens não finalizadas
+
+bool primeiroRegistro = true;
+
 void recuperarViagemInterrompida() {
-  File root = SD.open("/");
-  String arquivoEncontrado = "";
+  // Verificar se a pasta /pendente existe
+  if (!SD.exists("/pendente")) {
+    Serial.println("✅ Nenhuma viagem pendente");
+    return;
+  }
+
+  File pendenteDir = SD.open("/pendente");
+  if (!pendenteDir) {
+    Serial.println("❌ Erro ao abrir pasta /pendente");
+    return;
+  }
+
+  int viagensProcessadas = 0;
   
-  // Procurar por arquivos de viagem na raiz
+  // Processar todos os arquivos .json
   while (true) {
-    File entry = root.openNextFile();
+    File entry = pendenteDir.openNextFile();
     if (!entry) break;
     
     String nomeArquivo = String(entry.name());
-    if (nomeArquivo.startsWith("/viagem_") && nomeArquivo.endsWith(".json")) {
-      arquivoEncontrado = nomeArquivo;
-      entry.close();
-      break;
-    }
     entry.close();
-  }
-  root.close();
-  
-  if (arquivoEncontrado == "") {
-    Serial.println("❌ Nenhum arquivo de viagem encontrado para recuperar");
-    return;
-  }
-  
-  File viagemFile = SD.open(arquivoEncontrado, FILE_READ);
-  if (!viagemFile) {
-    Serial.println("❌ Erro ao abrir viagem em andamento");
-    return;
-  }
-  
-  // Tentar extrair o ID da viagem
-  unsigned long idExistente = 0;
-  String primeiraLinha = viagemFile.readStringUntil('\n');
-  viagemFile.close();
-  
-  int inicioId = primeiraLinha.indexOf("\"viagem_id\":");
-  if (inicioId != -1) {
-    inicioId += 12;
-    int fimId = primeiraLinha.indexOf(",", inicioId);
-    if (fimId == -1) fimId = primeiraLinha.indexOf("}", inicioId);
+
+    // Pular diretórios e arquivos que não são .json
+    if (nomeArquivo.equals(".") || nomeArquivo.equals("..") || 
+        nomeArquivo.indexOf(".") == -1 || !nomeArquivo.endsWith(".json")) {
+      continue;
+    }
+
+    String caminhoCompleto = "/pendente/" + nomeArquivo;
     
-    if (fimId != -1) {
-      String idStr = primeiraLinha.substring(inicioId, fimId);
-      idExistente = idStr.toInt();
+    Serial.print("🔄 Finalizando: ");
+    Serial.println(nomeArquivo);
+
+    // Adicionar "]}" para fechar o JSON
+    File arquivo = SD.open(caminhoCompleto, FILE_APPEND);
+    if (arquivo) {
+      arquivo.print("]}");
+      arquivo.flush();
+      arquivo.close();
+      
+      // Mover para viagens
+      String novoCaminho = "/viagens/" + nomeArquivo;
+      if (SD.rename(caminhoCompleto, novoCaminho)) {
+        Serial.print("✅ Movido: ");
+        Serial.println(novoCaminho);
+        viagensProcessadas++;
+      } else {
+        Serial.println("❌ Falha ao mover arquivo");
+      }
+    } else {
+      Serial.println("❌ Erro ao abrir arquivo");
     }
   }
-  
-  // Se não encontrou ID, tentar extrair do nome do arquivo
-  if (idExistente == 0) {
-    int inicio = arquivoEncontrado.indexOf("_") + 1;
-    int fim = arquivoEncontrado.indexOf(".");
-    if (inicio != -1 && fim != -1) {
-      String idStr = arquivoEncontrado.substring(inicio, fim);
-      idExistente = idStr.toInt();
-    }
-  }
-  
-  // Se ainda não encontrou, gerar novo ID
-  if (idExistente == 0) {
-    idExistente = gerarIdUnico();
-  }
-  
-  viagemId = idExistente;
-  nomeArquivoViagem = arquivoEncontrado;
-  viagemAtiva = true;
-  
-  Serial.print("✅ Viagem recuperada - ID: ");
-  Serial.print(viagemId);
-  Serial.print(", Arquivo: ");
-  Serial.println(nomeArquivoViagem);
-  
-  // Reabrir o arquivo para continuar escrevendo
-  arquivoViagem = SD.open(nomeArquivoViagem, FILE_APPEND);
-  if (!arquivoViagem) {
-    Serial.println("❌ Erro ao reabrir arquivo de viagem");
-    viagemAtiva = false;
-    nomeArquivoViagem = "";
-    viagemId = 0;
+
+  pendenteDir.close();
+
+  if (viagensProcessadas > 0) {
+    Serial.print("✅ Processamento concluído. ");
+    Serial.print(viagensProcessadas);
+    Serial.println(" viagem(ns) recuperada(s)");
+  } else {
+    Serial.println("✅ Nenhuma viagem pendente encontrada");
   }
 }
 
+
 void iniciarViagem() {
-  // Gerar ID único inteiro para a viagem
   viagemId = gerarIdUnico();
-  
-  // Usar arquivo TEMPORÁRIO mas com extensão .json desde o início
-  nomeArquivoViagem = "/viagem_" + String(viagemId) + ".json";
-  Serial.print(nomeArquivoViagem);
-  
+  nomeArquivoViagem = "/pendente/viagem_" + String(viagemId) + ".json";
+
   arquivoViagem = SD.open(nomeArquivoViagem, FILE_WRITE);
   if (!arquivoViagem) {
     Serial.println("❌ Erro ao criar arquivo de viagem");
     return;
   }
-  
-  // Escrever cabeçalho com ID único
+
   snprintf(jsonBuffer, sizeof(jsonBuffer),
-           "{\"viagem_id\":%lu,\"motorista_id\":%d,\"veiculo_id\":%d,\"inicio\":\"%s\"}\n",
-           viagemId,
-           motoristaAtual["id"].as<int>(),
-           VEICULO_ID,
-           getTimestamp().c_str());
-  
+    "{"
+    "\"viagem_id\":%lu,"
+    "\"motorista_id\":%d,"
+    "\"veiculo_id\":%d,"
+    "\"inicio\":\"%s\","
+    "\"registros\":[\n",
+    viagemId,
+    motoristaAtual["id"].as<int>(),
+    VEICULO_ID,
+    getTimestamp().c_str()
+  );
+
   arquivoViagem.print(jsonBuffer);
   arquivoViagem.flush();
-  
+
   viagemAtiva = true;
-  Serial.print("✅ Viagem iniciada (ID: ");
-  Serial.print(viagemId);
-  Serial.print(", Arquivo: ");
+  primeiroRegistro = true;
+
+  Serial.print("✅ Viagem iniciada (Arquivo: ");
   Serial.print(nomeArquivoViagem);
   Serial.println(")");
 }
 
 void registrarPosicao(float lat, float lng, float vel, bool chuva) {
   if (!viagemAtiva) return;
-  
-  // Uma única escrita otimizada
+
+  if (!primeiroRegistro) {
+    arquivoViagem.print(",\n"); // adiciona vírgula entre registros
+  } else {
+    primeiroRegistro = false;
+  }
+
   snprintf(jsonBuffer, sizeof(jsonBuffer),
-           "{\"timestamp\":\"%s\",\"lat\":%.6f,\"lng\":%.6f,\"vel\":%.2f,\"chuva\":%s,\"lim_seco\":%d,\"lim_chuva\":%d}\n",
-           getTimestamp().c_str(),
-           lat, lng, vel,
-           chuva ? "true" : "false",
-           vel_max, vel_max_chuva);
-  
+    "{\"timestamp\":\"%s\",\"lat\":%.6f,\"lng\":%.6f,"
+    "\"vel\":%.2f,\"chuva\":%s,\"lim_seco\":%d,\"lim_chuva\":%d}",
+    getTimestamp().c_str(),
+    lat, lng, vel,
+    chuva ? "true" : "false",
+    vel_max, vel_max_chuva
+  );
+
   arquivoViagem.print(jsonBuffer);
   arquivoViagem.flush();
-  
   salvarUltimoLimite();
 }
 
 void encerrarViagem() {
   if (!viagemAtiva || nomeArquivoViagem == "") return;
-  
+
   float dest_lat = gps.location.isValid() ? gps.location.lat() : 0.0;
   float dest_lng = gps.location.isValid() ? gps.location.lng() : 0.0;
-  
+
   snprintf(jsonBuffer, sizeof(jsonBuffer),
-           "{\"fim\":\"%s\",\"dest_lat\":%.6f,\"dest_lng\":%.6f}\n",
-           getTimestamp().c_str(),
-           dest_lat, dest_lng);
-  
+    "],\"fim\":\"%s\",\"dest_lat\":%.6f,\"dest_lng\":%.6f}\n",
+    getTimestamp().c_str(),
+    dest_lat, dest_lng
+  );
+
   arquivoViagem.print(jsonBuffer);
   arquivoViagem.flush();
   arquivoViagem.close();
-  
-  // Verificar se o arquivo já está na pasta viagens
-  if (!nomeArquivoViagem.startsWith("/viagens/")) {
-    // Mover arquivo para a pasta de viagens
-    String novoNome = "/viagens/viagem_" + String(viagemId) + ".json";
-    
-    if (SD.rename(nomeArquivoViagem, novoNome)) {
-      Serial.print("✅ Viagem movida para: ");
-      Serial.println(novoNome);
-    } else {
-      Serial.print("⚠️ Não foi possível mover, mantendo em: ");
-      Serial.println(nomeArquivoViagem);
-    }
+
+  // mover de /pendente para /viagens
+  String novoNome = "/viagens/viagem_" + String(viagemId) + ".json";
+  if (SD.rename(nomeArquivoViagem, novoNome)) {
+    Serial.print("✅ Viagem movida para: ");
+    Serial.println(novoNome);
   } else {
-    Serial.print("✅ Viagem finalizada em: ");
+    Serial.print("⚠️ Não foi possível mover, mantendo em: ");
     Serial.println(nomeArquivoViagem);
   }
-  
+
   viagemAtiva = false;
   nomeArquivoViagem = "";
   viagemId = 0;
+  primeiroRegistro = true;
   Serial.println("✅ Viagem encerrada");
 }
+
+
+
+
 
 
 
