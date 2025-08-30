@@ -957,12 +957,10 @@ void iniciarViagem() {
     "\"viagem_id\":%lu,"
     "\"motorista_id\":%d,"
     "\"veiculo_id\":%d,"
-    "\"inicio\":\"%s\","
     "\"registros\":[\n",
     viagemId,
     motoristaAtual["id"].as<int>(),
-    VEICULO_ID,
-    getTimestamp().c_str()
+    VEICULO_ID
   );
 
   arquivoViagem.print(jsonBuffer);
@@ -975,6 +973,7 @@ void iniciarViagem() {
   Serial.print(nomeArquivoViagem);
   Serial.println(")");
 }
+
 
 void registrarPosicao(float lat, float lng, float vel, bool chuva) {
   if (!viagemAtiva) return;
