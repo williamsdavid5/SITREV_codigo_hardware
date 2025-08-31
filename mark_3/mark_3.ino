@@ -50,6 +50,12 @@ const unsigned long intervaloVerificacaoCercas = 15000; // 5 segundos
 int vel_max;
 int vel_max_chuva;
 
+float vel = 0;
+unsigned long ultimaImpressaoVel = 0;
+
+#define potenciometro 34
+#define vel_max_potenciometro 80
+
 // === RFID ===
 #define RST_PIN 27
 #define SS_PIN_RFID 15
@@ -222,6 +228,12 @@ void taskRFID(void* parameter) {
   }
 }
 
+float lerVelocidadePotenciometro() {
+  int leitura = analogRead(potenciometro);
+  // Converte leitura ADC (0-4095) para velocidade (0-80 km/h)
+  return map(leitura, 0, 4095, 0, vel_max_potenciometro);
+}
+
 //------------------------------------------------------------------------
 
 void setup() {
@@ -232,6 +244,8 @@ void setup() {
 
   digitalWrite(LED_PIN, LOW);
   digitalWrite(BUZZER_PIN, LOW);
+
+  pinMode(potenciometro, INPUT);
 
   limiteCarregadoOffline = false;
 
@@ -404,27 +418,39 @@ void loop() {
     }
 
 
-  while (gpsSerial.available()) {
-    gps.encode(gpsSerial.read());
+    while (gpsSerial.available()) {
+      gps.encode(gpsSerial.read());
 
-    if (gps.location.isUpdated()) {
-      gpsAtivo = true;
+      if (gps.location.isUpdated()) {
+        gpsAtivo = true;
 
-      float lat = gps.location.lat();
-      float lng = gps.location.lng();
-      float vel = gps.speed.kmph(); // velocidade do obd2
-      bool chuva = false; // sensor IR
+        float lat = gps.location.lat();
+        float lng = gps.location.lng();
+        // float vel = gps.speed.kmph(); // velocidade do obd2
+        vel = lerVelocidadePotenciometro();
+        bool chuva = false; // sensor IR
 
-      if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
-        Serial.print("Lat: "); Serial.println(lat, 6);
-        Serial.print("Lng: "); Serial.println(lng, 6);
-        ultimaVerificacaoCercas = millis();
+        if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
+          Serial.print("Lat: "); Serial.println(lat, 6);
+          Serial.print("Lng: "); Serial.println(lng, 6);
+          ultimaVerificacaoCercas = millis();
 
-        verificarCercas(lat, lng);
-        registrarPosicao(lat, lng, vel, chuva);
+          verificarCercas(lat, lng);
+          registrarPosicao(lat, lng, vel, chuva);
+        }
       }
     }
-  }
+
+    if (millis() - ultimaImpressaoVel > 500) {
+      lcd.setCursor(0, 0); 
+      lcd.print("                ");
+      lcd.setCursor(0, 0); 
+      lcd.print(vel);
+      lcd.setCursor(4, 0); 
+      lcd.print("km/h");
+      ultimaImpressaoVel = millis();
+    }
+    
   } else {
 
     if (!lcdFlag) {
@@ -813,8 +839,8 @@ void verificarCercas(float lat, float lng) {
     vel_max_chuva = menorVelChuva;
 
     lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print(String(nomeMaisRestrito).substring(0, 16));
+    // lcd.setCursor(0, 0);
+    // lcd.print(String(nomeMaisRestrito).substring(0, 16));
 
     lcd.setCursor(0, 1);
     lcd.print("Limite: ");
@@ -823,7 +849,7 @@ void verificarCercas(float lat, float lng) {
   } else {
     Serial.println("📭 Fora de qualquer cerca.");
     lcd.clear();
-    lcd.setCursor(0, 0);
+    lcd.setCursor(0, 1);
     lcd.print("Fora de qualquer cerca");
   }
 }
@@ -996,6 +1022,9 @@ void registrarPosicao(float lat, float lng, float vel, bool chuva) {
   arquivoViagem.print(jsonBuffer);
   arquivoViagem.flush();
   salvarUltimoLimite();
+
+  Serial.print("Posição registrada, velocidade: ");
+  Serial.println(vel);
 }
 
 void encerrarViagem() {
