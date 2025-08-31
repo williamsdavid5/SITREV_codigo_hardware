@@ -45,7 +45,7 @@ const char* apiMotoristas = "https://telemetria-fvv4.onrender.com/motoristas/lim
 unsigned long ultimaAtualizacao = 0;
 const unsigned long intervaloAtualizacao = 5 * 60 * 1000; // 5 minutos
 unsigned long ultimaVerificacaoCercas = 0;
-const unsigned long intervaloVerificacaoCercas = 15000; // 5 segundos
+unsigned long intervaloVerificacaoCercas = 15000; // 5 segundos
 
 int vel_max;
 int vel_max_chuva;
@@ -55,6 +55,14 @@ unsigned long ultimaImpressaoVel = 0;
 
 #define potenciometro 34
 #define vel_max_potenciometro 80
+
+//============= paraa lógica de tolerancia de 10 segundos
+bool alertaVelocidade = false;
+unsigned long inicioAlerta = 0;
+const unsigned long TOLERANCIA_ALERTA = 10000; // 10 segundos
+const unsigned long INTERVALO_NORMAL = 15000; // 15 segundos padrão
+const unsigned long INTERVALO_ALERTA = 3000;  // 3 segundos durante alerta
+bool chuva = false; // sensor IR
 
 // === RFID ===
 #define RST_PIN 27
@@ -365,6 +373,9 @@ void setup() {
 //------------------------------------------------------------------------
 
 void loop() {
+
+  vel = lerVelocidadePotenciometro();
+
   if (millis() - ultimaAtualizacao > intervaloAtualizacao) {
     if (WiFi.status() != WL_CONNECTED) {
       Serial.println("🔌 Wi-Fi não conectado. Tentando reconectar...");
@@ -417,6 +428,32 @@ void loop() {
       }
     }
 
+    int limiteAtual = chuva ? vel_max_chuva : vel_max;
+
+    if (vel > limiteAtual && !alertaVelocidade) {
+      alertaVelocidade = true;
+      inicioAlerta = millis();
+      digitalWrite(BUZZER_PIN, !digitalRead(BUZZER_PIN));
+      Serial.println("🚨 Velocidade acima do limite! Buzzer ativado.");
+    }
+
+    if (alertaVelocidade) {
+      // Verifica se motorista reduziu dentro dos 10 segundos
+      if (vel <= limiteAtual) {
+        alertaVelocidade = false;
+        digitalWrite(BUZZER_PIN, LOW);
+        Serial.println("✅ Velocidade normalizada. Alerta cancelado.");
+      }
+      else if (millis() - inicioAlerta > TOLERANCIA_ALERTA) {
+        // Motorista não reduziu, diminui intervalo de verificação
+        intervaloVerificacaoCercas = INTERVALO_ALERTA;
+        Serial.println("⚠️ Intervalo reduzido para 3s (alerta ativo)");
+      }
+    }
+    else if (intervaloVerificacaoCercas != INTERVALO_NORMAL) {
+      intervaloVerificacaoCercas = INTERVALO_NORMAL;
+      Serial.println("↩️ Intervalo restaurado para 15s");
+    }
 
     while (gpsSerial.available()) {
       gps.encode(gpsSerial.read());
@@ -427,16 +464,17 @@ void loop() {
         float lat = gps.location.lat();
         float lng = gps.location.lng();
         // float vel = gps.speed.kmph(); // velocidade do obd2
-        vel = lerVelocidadePotenciometro();
-        bool chuva = false; // sensor IR
 
         if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
-          Serial.print("Lat: "); Serial.println(lat, 6);
-          Serial.print("Lng: "); Serial.println(lng, 6);
-          ultimaVerificacaoCercas = millis();
 
-          verificarCercas(lat, lng);
-          registrarPosicao(lat, lng, vel, chuva);
+          if (!alertaVelocidade || (alertaVelocidade && millis() - inicioAlerta > TOLERANCIA_ALERTA)) {
+            Serial.print("Lat: "); Serial.println(lat, 6);
+            Serial.print("Lng: "); Serial.println(lng, 6);
+            ultimaVerificacaoCercas = millis();
+
+            verificarCercas(lat, lng);
+            registrarPosicao(lat, lng, vel, chuva);
+          }
         }
       }
     }
@@ -846,6 +884,9 @@ void verificarCercas(float lat, float lng) {
     lcd.print("Limite: ");
     lcd.print(vel_max);
     lcd.print("km/h");
+
+    //para definir se estpa chovendo futuramente usando o sensor
+    chuva = false;
   } else {
     Serial.println("📭 Fora de qualquer cerca.");
     lcd.clear();
