@@ -43,9 +43,9 @@ const char* apiMotoristas = "https://telemetria-fvv4.onrender.com/motoristas/lim
 
 // === Atualização periódica ===
 unsigned long ultimaAtualizacao = 0;
-const unsigned long intervaloAtualizacao = 5 * 60 * 1000; // 5 minutos
+const unsigned long intervaloAtualizacao = 15 * 1000; // 5 minutos
 unsigned long ultimaVerificacaoCercas = 0;
-unsigned long intervaloVerificacaoCercas = 15000; // 5 segundos
+unsigned long intervaloVerificacaoCercas = 30000;
 
 int vel_max;
 int vel_max_chuva;
@@ -103,6 +103,23 @@ void encerrarViagem(float destinoLat, float destinoLng);
 
 unsigned long ultimaLeituraRFID = 0;
 const unsigned long DEBOUNCE_RFID = 1000;
+
+// para a atualização assincrona de cercas --------------------------
+enum EstadoAtualizacao { 
+    ATUALIZACAO_OCIOSA, 
+    ATUALIZANDO_CERCAS, 
+    ATUALIZANDO_MOTORISTAS,
+    AGUARDANDO_PROXIMA 
+};
+
+EstadoAtualizacao estadoAtualizacao = ATUALIZACAO_OCIOSA;
+unsigned long inicioAtualizacao = 0;
+const unsigned long TIMEOUT_ATUALIZACAO = 15000;
+unsigned long inicioAtualizacaoMotoristas = 0;
+const unsigned long TIMEOUT_MOTORISTAS = 15000;
+//para evitar o acesso simutaneo do SD
+SemaphoreHandle_t semaforoSD;
+
 void processarCartao(String uid) {
   if (millis() - ultimaLeituraRFID < DEBOUNCE_RFID) {
     Serial.println("⏰ Debounce RFID: leitura ignorada (muito rápida)");
@@ -257,6 +274,11 @@ void setup() {
 
   limiteCarregadoOffline = false;
 
+  semaforoSD = xSemaphoreCreateMutex();
+  if (semaforoSD == NULL) {
+      Serial.println("❌ Falha ao criar semáforo SD");
+  }
+
   pinMode(RST_PIN, OUTPUT);
   digitalWrite(RST_PIN, HIGH);
   delay(3000);
@@ -375,25 +397,26 @@ void setup() {
 void loop() {
 
   vel = lerVelocidadePotenciometro();
+  gerenciarAtualizacoes();
 
   if (millis() - ultimaAtualizacao > intervaloAtualizacao) {
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("🔌 Wi-Fi não conectado. Tentando reconectar...");
-      WiFi.begin(ssid, password);
-      unsigned long inicio = millis();
-      while (WiFi.status() != WL_CONNECTED && millis() - inicio < 10000) {
-        delay(500);
-        Serial.print(".");
+      if (WiFi.status() != WL_CONNECTED) {
+          Serial.println("🔌 Wi-Fi não conectado. Tentando reconectar...");
+          WiFi.begin(ssid, password);
+          unsigned long inicio = millis();
+          while (WiFi.status() != WL_CONNECTED && millis() - inicio < 5000) {
+              delay(500);
+              Serial.print(".");
+          }
+          if (WiFi.status() == WL_CONNECTED) {
+              Serial.println("\n✅ Reconectado ao Wi-Fi!");
+          }
       }
-      Serial.println(WiFi.status() == WL_CONNECTED ? "\n✅ Reconectado ao Wi-Fi!" : "\n❌ Falha ao reconectar.");
-    }
 
-    if (WiFi.status() == WL_CONNECTED) {
-      atualizarCercas();
-      atualizarMotoristas();
-    }
-
-    ultimaAtualizacao = millis();
+      if (WiFi.status() == WL_CONNECTED && estadoAtualizacao == ATUALIZACAO_OCIOSA) {
+          atualizarCercas(); // Inicia a sequência de atualizações
+          ultimaAtualizacao = millis();
+      }
   }
 
   if (rfidLido) {
@@ -510,81 +533,245 @@ void loop() {
   }
 }
 
-// lógicas para motoristas e cercas ------------------------------------------------------------------------
-void atualizarCercas() {
-  Serial.println("🔄 Atualizando lista de cercas...");
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient https;
-
-  if (https.begin(client, apiURL)) {
-    https.addHeader("User-Agent", "ESP8266");
-    https.addHeader("Accept", "application/json");
-    https.addHeader("Accept-Encoding", "identity");
-    https.setTimeout(10000); // 10 segundos de espera de resposta da API
-
-
-    int httpCode = https.GET();
-    if (httpCode == 200) {
-      Serial.println("Resposta OK. Salvando no arquivo temporário...");
-
-      // Salva em arquivo temporário
-      File temp = SD.open("/temp_cercas.json", FILE_WRITE);
-      if (temp) {
-        WiFiClient& stream = https.getStream();
-
-        unsigned long inicio = millis();
-        const unsigned long tempoLimite = 10000; // 10 segundos
-        bool iniciouJson = false;
-
-        while ((millis() - inicio) < tempoLimite) {
-          if (stream.available()) {
-            char c = stream.read();
-
-            if (!iniciouJson) {
-              if (c == '[' || c == '{') {
-                iniciouJson = true;
-                temp.write(c);
-              }
-            } else {
-              temp.write(c);
+void gerenciarAtualizacoes() {
+    switch (estadoAtualizacao) {
+        case ATUALIZACAO_OCIOSA:
+            // Nada a fazer, espera próxima atualização periódica
+            break;
+            
+        case ATUALIZANDO_CERCAS:
+            if (processarAtualizacaoCercas()) {
+                // Se terminou cercas, inicia motoristas
+                iniciarAtualizacaoMotoristas();
             }
+            break;
+            
+        case ATUALIZANDO_MOTORISTAS:
+            if (processarAtualizacaoMotoristas()) {
+                // Se terminou motoristas, volta para ocioso
+                estadoAtualizacao = ATUALIZACAO_OCIOSA;
+                Serial.println("✅ Todas as atualizações concluídas");
+            }
+            break;
+            
+        case AGUARDANDO_PROXIMA:
+            // Estado adicional se necessário
+            break;
+    }
+}
 
-            inicio = millis(); // Reinicia tempo sempre que lê algo
-          }
-        }
+bool iniciarAtualizacaoCercas() {
+  if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("❌ WiFi não conectado para atualização");
+      return false;
+  }
 
-        temp.flush();
-        temp.close();
-        Serial.println("✅ Arquivo temporário salvo com sucesso!");
-
-        if (validarEstruturaJSON("/temp_cercas.json")) {
-          Serial.println("✅ JSON parece válido! Substituindo arquivo oficial...");
-
-          if (SD.exists("/cercas.json")) {
-            SD.remove("/cercas.json");
-          }
-
-          SD.rename("/temp_cercas.json", "/cercas.json");
-          Serial.println("📝 Substituição concluída.");
-        } else {
-          Serial.println("⚠️ JSON inválido (estrutura incompleta). Mantendo arquivo antigo.");
-        }
-
-      } else {
-        Serial.println("❌ Erro ao abrir arquivo temporário para escrita.");
+  if (xSemaphoreTake(semaforoSD, portMAX_DELAY)) {
+      Serial.println("🔄 Iniciando atualização de cercas (assíncrona)");
+      
+      File temp = SD.open("/temp_cercas.json", FILE_WRITE);
+      if (!temp) {
+          Serial.println("❌ Erro ao abrir arquivo temporário");
+          xSemaphoreGive(semaforoSD);
+          return false;
       }
-    } else {
-      Serial.print("⚠️ Falha na requisição. Código HTTP: ");
-      Serial.println(httpCode);
+      
+      WiFiClientSecure client;
+      client.setInsecure();
+      HTTPClient https;
+      
+      if (https.begin(client, apiURL)) {
+          https.addHeader("User-Agent", "ESP8266");
+          https.addHeader("Accept", "application/json");
+          https.setTimeout(5000);
+          
+          int httpCode = https.GET();
+          if (httpCode == 200) {
+              // Escreve apenas o início do JSON para não bloquear
+              temp.write('[');
+              temp.flush();
+              temp.close();
+              xSemaphoreGive(semaforoSD);
+              
+              estadoAtualizacao = ATUALIZANDO_CERCAS;
+              inicioAtualizacao = millis();
+              return true;
+          }
+      }
+      
+      temp.close();
+      SD.remove("/temp_cercas.json");
+      xSemaphoreGive(semaforoSD);
+  }
+  return false;
+}
+
+bool processarAtualizacaoCercas() {
+  if (xSemaphoreTake(semaforoSD, 0)) {
+      bool conclusao = false;
+      WiFiClientSecure client;
+      client.setInsecure();
+      HTTPClient https;
+      
+      if (https.begin(client, apiURL)) {
+          WiFiClient& stream = https.getStream();
+          
+          File temp = SD.open("/temp_cercas.json", FILE_APPEND);
+          if (temp) {
+              // Processar em blocos menores
+              int bytesLidos = 0;
+              while (stream.available() && bytesLidos < 512) {
+                  temp.write(stream.read());
+                  bytesLidos++;
+              }
+              
+              temp.close();
+              
+              if (!stream.available()) {
+                  // Finalizou a transferência
+                  https.end();
+                  temp = SD.open("/temp_cercas.json", FILE_APPEND);
+                  if (temp) {
+                      temp.write(']');
+                      temp.close();
+                      
+                      if (validarEstruturaJSON("/temp_cercas.json")) {
+                          if (SD.exists("/cercas.json")) {
+                              SD.remove("/cercas.json");
+                          }
+                          if (SD.rename("/temp_cercas.json", "/cercas.json")) {
+                              Serial.println("✅ Cercas atualizadas com sucesso");
+                              conclusao = true;
+                          }
+                      } else {
+                          SD.remove("/temp_cercas.json");
+                          Serial.println("❌ JSON de cercas inválido");
+                      }
+                  }
+                  estadoAtualizacao = ATUALIZACAO_OCIOSA;
+              }
+          }
+      }
+      xSemaphoreGive(semaforoSD);
+      return conclusao;
+  }
+  
+  return false;
+}
+
+bool iniciarAtualizacaoMotoristas() {
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("❌ WiFi não conectado para atualização de motoristas");
+        return false;
+    }
+
+    if (xSemaphoreTake(semaforoSD, portMAX_DELAY)) {
+        Serial.println("🔄 Iniciando atualização de motoristas (assíncrona)");
+        
+        File temp = SD.open("/temp_motoristas.json", FILE_WRITE);
+        if (!temp) {
+            Serial.println("❌ Erro ao abrir arquivo temporário de motoristas");
+            xSemaphoreGive(semaforoSD);
+            return false;
+        }
+        
+        WiFiClientSecure client;
+        client.setInsecure();
+        HTTPClient https;
+        
+        if (https.begin(client, apiMotoristas)) {
+            https.addHeader("User-Agent", "ESP8266");
+            https.addHeader("Accept", "application/json");
+            https.setTimeout(5000);
+            
+            int httpCode = https.GET();
+            if (httpCode == 200) {
+                // Escreve apenas o início do JSON para não bloquear
+                temp.write('[');
+                temp.flush();
+                temp.close();
+                xSemaphoreGive(semaforoSD);
+                
+                estadoAtualizacao = ATUALIZANDO_MOTORISTAS;
+                inicioAtualizacaoMotoristas = millis();
+                return true;
+            }
+        }
+        
+        temp.close();
+        SD.remove("/temp_motoristas.json");
+        xSemaphoreGive(semaforoSD);
+    }
+    return false;
+}
+
+bool processarAtualizacaoMotoristas() {
+    if (xSemaphoreTake(semaforoSD, 0)) {
+        bool conclusao = false;
+        WiFiClientSecure client;
+        client.setInsecure();
+        HTTPClient https;
+        
+        if (https.begin(client, apiMotoristas)) {
+            WiFiClient& stream = https.getStream();
+            
+            File temp = SD.open("/temp_motoristas.json", FILE_APPEND);
+            if (temp) {
+                // Processar em blocos menores
+                int bytesLidos = 0;
+                while (stream.available() && bytesLidos < 512) {
+                    temp.write(stream.read());
+                    bytesLidos++;
+                }
+                
+                temp.close();
+                
+                if (!stream.available()) {
+                    // Finalizou a transferência
+                    https.end();
+                    temp = SD.open("/temp_motoristas.json", FILE_APPEND);
+                    if (temp) {
+                        temp.write(']');
+                        temp.close();
+                        
+                        if (validarEstruturaJSON("/temp_motoristas.json")) {
+                            if (SD.exists("/motoristas.json")) {
+                                SD.remove("/motoristas.json");
+                            }
+                            if (SD.rename("/temp_motoristas.json", "/motoristas.json")) {
+                                Serial.println("✅ Motoristas atualizados com sucesso");
+                                conclusao = true;
+                            }
+                        } else {
+                            SD.remove("/temp_motoristas.json");
+                            Serial.println("❌ JSON de motoristas inválido");
+                        }
+                    }
+                    estadoAtualizacao = ATUALIZACAO_OCIOSA;
+                }
+            }
+        }
+        xSemaphoreGive(semaforoSD);
+        return conclusao;
     }
     
-    https.end();
-
-  } else {
-    Serial.println("❌ Erro ao iniciar conexão HTTPS.");
-  }
+    return false;
 }
+
+// lógicas para motoristas e cercas ------------------------------------------------------------------------
+void atualizarCercas() {
+    if (estadoAtualizacao == ATUALIZACAO_OCIOSA) {
+        iniciarAtualizacaoCercas();
+    }
+}
+
+// void atualizarMotoristas() {
+//     // Esta função agora será chamada automaticamente pela sequência
+//     // Mantemos ela por compatibilidade, mas não faz nada sozinha
+//     if (estadoAtualizacao == ATUALIZACAO_OCIOSA) {
+//         iniciarAtualizacaoMotoristas();
+//     }
+// }
 
 void atualizarMotoristas() {
   Serial.println("🔄 Atualizando lista de motoristas...");
@@ -791,108 +978,116 @@ bool carregarUltimoLimite() {
 }
 
 void verificarCercas(float lat, float lng) {
-  File file = SD.open("/cercas.json");
-  if (!file) {
-    Serial.println("Erro ao abrir cercas.json");
-    return;
-  }
 
-  // Verifica se o JSON começa com [
-  char c;
-  do {
-    c = file.read();
-  } while (c != -1 && isspace(c)); // ignora espaços
-
-  if (c != '[') {
-    Serial.println("Formato inválido: JSON não começa com [");
-    file.close();
-    return;
-  }
-
-  StaticJsonDocument<1024> doc;
-  bool encontrouAlguma = false;
-
-  int menorVelMax = 999;         // Inicializa com valor alto
-  int menorVelChuva = 999;
-  const char* nomeMaisRestrito = nullptr;
-
-  while (file.available()) {
-    DeserializationError err = deserializeJson(doc, file);
-    if (err) {
-      Serial.print("Erro ao parsear objeto JSON: ");
-      Serial.println(err.c_str());
-      break;
+  if (xSemaphoreTake(semaforoSD, 100 / portTICK_PERIOD_MS)) {
+    File file = SD.open("/cercas.json");
+    if (!file) {
+      Serial.println("Erro ao abrir cercas.json");
+      return;
     }
 
-    JsonObject cerca = doc.as<JsonObject>();
-    const char* nome = cerca["nome"];
-    Serial.print("Verificando: ");
-    Serial.println(nome);
-    const char* velMaxStr = cerca["velocidade_max"];
-    const char* velChuvaStr = cerca["velocidade_chuva"];
-    JsonArray coords = cerca["coordenadas"];
+    // Verifica se o JSON começa com [
+    char c;
+    do {
+      c = file.read();
+    } while (c != -1 && isspace(c)); // ignora espaços
 
-    if (dentroDoPoligono(lat, lng, coords)) {
-      int vel = atoi(velMaxStr);
-      int velChuva = atoi(velChuvaStr);
-
-      Serial.println("🛑 Dentro de uma cerca:");
-      Serial.print("📍 Nome: "); Serial.println(nome);
-      Serial.print("🚗 Limite: "); Serial.print(vel); Serial.println(" km/h");
-
-      if (vel < menorVelMax) {
-        menorVelMax = vel;
-        menorVelChuva = velChuva;
-        nomeMaisRestrito = nome;
-        encontrouAlguma = true;
-      }
+    if (c != '[') {
+      Serial.println("Formato inválido: JSON não começa com [");
+      file.close();
+      return;
     }
 
-    bool terminou = false;
+    StaticJsonDocument<1024> doc;
+    bool encontrouAlguma = false;
+
+    int menorVelMax = 999;         // Inicializa com valor alto
+    int menorVelChuva = 999;
+    const char* nomeMaisRestrito = nullptr;
+
     while (file.available()) {
-      char next = file.peek();
-      if (next == ',') {
-        file.read(); // consome vírgula
-        break;
-      } else if (isspace(next)) {
-        file.read(); // consome espaço
-      } else if (next == ']') {
-        file.read(); // fim do array
-        terminou = true;
-        break;
-      } else {
+      DeserializationError err = deserializeJson(doc, file);
+      if (err) {
+        Serial.print("Erro ao parsear objeto JSON: ");
+        Serial.println(err.c_str());
         break;
       }
+
+      JsonObject cerca = doc.as<JsonObject>();
+      const char* nome = cerca["nome"];
+      Serial.print("Verificando: ");
+      Serial.println(nome);
+      const char* velMaxStr = cerca["velocidade_max"];
+      const char* velChuvaStr = cerca["velocidade_chuva"];
+      JsonArray coords = cerca["coordenadas"];
+
+      if (dentroDoPoligono(lat, lng, coords)) {
+        int vel = atoi(velMaxStr);
+        int velChuva = atoi(velChuvaStr);
+
+        Serial.println("🛑 Dentro de uma cerca:");
+        Serial.print("📍 Nome: "); Serial.println(nome);
+        Serial.print("🚗 Limite: "); Serial.print(vel); Serial.println(" km/h");
+
+        if (vel < menorVelMax) {
+          menorVelMax = vel;
+          menorVelChuva = velChuva;
+          nomeMaisRestrito = nome;
+          encontrouAlguma = true;
+        }
+      }
+
+      bool terminou = false;
+      while (file.available()) {
+        char next = file.peek();
+        if (next == ',') {
+          file.read(); // consome vírgula
+          break;
+        } else if (isspace(next)) {
+          file.read(); // consome espaço
+        } else if (next == ']') {
+          file.read(); // fim do array
+          terminou = true;
+          break;
+        } else {
+          break;
+        }
+      }
+
+      if (terminou) break;
+
+      doc.clear(); // limpa doc para o próximo
     }
 
-    if (terminou) break;
+    file.close();
 
-    doc.clear(); // limpa doc para o próximo
-  }
+    if (encontrouAlguma) {
+      vel_max = menorVelMax;
+      vel_max_chuva = menorVelChuva;
 
-  file.close();
+      lcd.clear();
+      // lcd.setCursor(0, 0);
+      // lcd.print(String(nomeMaisRestrito).substring(0, 16));
 
-  if (encontrouAlguma) {
-    vel_max = menorVelMax;
-    vel_max_chuva = menorVelChuva;
+      lcd.setCursor(0, 1);
+      lcd.print("Limite: ");
+      lcd.print(vel_max);
+      lcd.print("km/h");
 
-    lcd.clear();
-    // lcd.setCursor(0, 0);
-    // lcd.print(String(nomeMaisRestrito).substring(0, 16));
+      //para definir se estpa chovendo futuramente usando o sensor
+      chuva = false;
+    } else {
+      Serial.println("📭 Fora de qualquer cerca.");
+      lcd.clear();
+      lcd.setCursor(0, 1);
+      lcd.print("Fora de qualquer cerca");
+    }
 
-    lcd.setCursor(0, 1);
-    lcd.print("Limite: ");
-    lcd.print(vel_max);
-    lcd.print("km/h");
-
-    //para definir se estpa chovendo futuramente usando o sensor
-    chuva = false;
+    xSemaphoreGive(semaforoSD);
   } else {
-    Serial.println("📭 Fora de qualquer cerca.");
-    lcd.clear();
-    lcd.setCursor(0, 1);
-    lcd.print("Fora de qualquer cerca");
+    Serial.println("⏰ Timeout ao acessar SD para verificação de cercas");
   }
+
 }
 
 bool dentroDoPoligono(float x, float y, JsonArray coords) {
