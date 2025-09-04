@@ -514,6 +514,7 @@ void loop() {
 }
 
 // lógicas para motoristas e cercas ------------------------------------------------------------------------
+// === Função para atualização assíncrona ===
 void taskAtualizacao(void* parameter) {
   Serial.println("🔄 Tarefa de atualização iniciada");
   
@@ -521,11 +522,17 @@ void taskAtualizacao(void* parameter) {
     if (atualizacaoEmAndamento) {
       Serial.println("🔄 Iniciando atualização assíncrona de cercas e motoristas...");
       
-      // Atualizar cercas
+      // Fazer ambas as requisições primeiro para aproveitar a janela de conexão
       WiFiClientSecure clientCercas;
-      clientCercas.setInsecure();
+      WiFiClientSecure clientMotoristas;
       HTTPClient httpsCercas;
-
+      HTTPClient httpsMotoristas;
+      
+      bool cercasSucesso = false;
+      bool motoristasSucesso = false;
+      
+      // REQUISIÇÃO DE CERCAS
+      clientCercas.setInsecure();
       if (httpsCercas.begin(clientCercas, apiURL)) {
         httpsCercas.addHeader("User-Agent", "ESP8266");
         httpsCercas.addHeader("Accept", "application/json");
@@ -534,66 +541,20 @@ void taskAtualizacao(void* parameter) {
 
         int httpCode = httpsCercas.GET();
         if (httpCode == 200) {
-          Serial.println("Resposta OK. Salvando no arquivo temporário...");
-
-          File temp = SD.open("/temp_cercas.json", FILE_WRITE);
-          if (temp) {
-            WiFiClient& stream = httpsCercas.getStream();
-
-            unsigned long inicio = millis();
-            const unsigned long tempoLimite = 10000;
-            bool iniciouJson = false;
-
-            while ((millis() - inicio) < tempoLimite) {
-              if (stream.available()) {
-                char c = stream.read();
-
-                if (!iniciouJson) {
-                  if (c == '[' || c == '{') {
-                    iniciouJson = true;
-                    temp.write(c);
-                  }
-                } else {
-                  temp.write(c);
-                }
-
-                inicio = millis(); // Reinicia tempo sempre que lê algo
-              }
-              
-              // DÁ TEMPO PARA OUTRAS TAREFAS - EVITA WATCHDOG
-              vTaskDelay(10 / portTICK_PERIOD_MS);
-            }
-
-            temp.flush();
-            temp.close();
-            Serial.println("✅ Arquivo temporário salvo com sucesso!");
-
-            if (validarEstruturaJSON("/temp_cercas.json")) {
-              Serial.println("✅ JSON parece válido! Substituindo arquivo oficial...");
-              if (SD.exists("/cercas.json")) SD.remove("/cercas.json");
-              SD.rename("/temp_cercas.json", "/cercas.json");
-              Serial.println("📝 Substituição concluída.");
-            } else {
-              Serial.println("⚠️ JSON inválido (estrutura incompleta). Mantendo arquivo antigo.");
-            }
-          } else {
-            Serial.println("❌ Erro ao abrir arquivo temporário para escrita.");
-          }
+          Serial.println("✅ Resposta OK das cercas. Preparando para salvar...");
+          cercasSucesso = true;
         } else {
           Serial.print("⚠️ Falha na requisição de cercas. Código HTTP: ");
           Serial.println(httpCode);
+          httpsCercas.end();
         }
-        httpsCercas.end();
       }
 
       // Pequeno delay entre as requisições
-      vTaskDelay(1000 / portTICK_PERIOD_MS);
+      vTaskDelay(300 / portTICK_PERIOD_MS);
 
-      // Atualizar motoristas
-      WiFiClientSecure clientMotoristas;
+      // REQUISIÇÃO DE MOTORISTAS
       clientMotoristas.setInsecure();
-      HTTPClient httpsMotoristas;
-
       if (httpsMotoristas.begin(clientMotoristas, apiMotoristas)) {
         httpsMotoristas.addHeader("User-Agent", "ESP8266");
         httpsMotoristas.addHeader("Accept", "application/json");
@@ -602,52 +563,125 @@ void taskAtualizacao(void* parameter) {
 
         int httpCode = httpsMotoristas.GET();
         if (httpCode == 200) {
-          Serial.println("🔄 Baixando motoristas...");
-
-          File temp = SD.open("/temp_motoristas.json", FILE_WRITE);
-          if (temp) {
-            WiFiClient& stream = httpsMotoristas.getStream();
-            unsigned long inicio = millis();
-            const unsigned long tempoLimite = 10000;
-            bool iniciouJson = false;
-
-            while ((millis() - inicio) < tempoLimite) {
-              if (stream.available()) {
-                char c = stream.read();
-                if (!iniciouJson) {
-                  if (c == '[' || c == '{') {
-                    iniciouJson = true;
-                    temp.write(c);
-                  }
-                } else {
-                  temp.write(c);
-                }
-                inicio = millis();
-              }
-              
-              // DÁ TEMPO PARA OUTRAS TAREFAS - EVITA WATCHDOG
-              vTaskDelay(10 / portTICK_PERIOD_MS);
-            }
-
-            temp.flush();
-            temp.close();
-            Serial.println("✅ Motoristas temporários salvos.");
-
-            if (validarEstruturaJSON("/temp_motoristas.json")) {
-              Serial.println("🧾 JSON de motoristas válido.");
-              if (SD.exists("/motoristas.json")) SD.remove("/motoristas.json");
-              SD.rename("/temp_motoristas.json", "/motoristas.json");
-              Serial.println("📦 motoristas.json atualizado com sucesso.");
-            } else {
-              Serial.println("❌ JSON de motoristas inválido.");
-            }
-          } else {
-            Serial.println("❌ Erro ao abrir temp_motoristas.json.");
-          }
+          Serial.println("✅ Resposta OK dos motoristas. Preparando para salvar...");
+          motoristasSucesso = true;
         } else {
           Serial.printf("Erro HTTP motoristas: %d\n", httpCode);
+          httpsMotoristas.end();
         }
-        httpsMotoristas.end();
+      }
+
+      // AGORA PROCESSAR OS DADOS (se as requisições foram bem sucedidas)
+      
+      // PROCESSAR CERCAS
+      if (cercasSucesso) {
+        Serial.println("💾 Salvando dados das cercas...");
+        File temp = SD.open("/temp_cercas.json", FILE_WRITE);
+        if (temp) {
+          WiFiClient& stream = httpsCercas.getStream();
+
+          unsigned long inicio = millis();
+          const unsigned long tempoLimite = 10000;
+          bool iniciouJson = false;
+          bool transmissaoAtiva = true;
+
+          while (transmissaoAtiva && (millis() - inicio) < tempoLimite) {
+            if (stream.available()) {
+              char c = stream.read();
+
+              if (!iniciouJson) {
+                if (c == '[' || c == '{') {
+                  iniciouJson = true;
+                  temp.write(c);
+                }
+              } else {
+                temp.write(c);
+              }
+
+              inicio = millis();
+            } else {
+              vTaskDelay(100 / portTICK_PERIOD_MS);
+              
+              if (!stream.connected() && stream.available() == 0) {
+                transmissaoAtiva = false;
+                Serial.println("📦 Transmissão de cercas concluída");
+              }
+            }
+            
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+          }
+
+          temp.flush();
+          temp.close();
+          httpsCercas.end();
+          Serial.println("✅ Dados das cercas salvos temporariamente");
+
+          if (validarEstruturaJSON("/temp_cercas.json")) {
+            Serial.println("✅ JSON de cercas válido! Substituindo arquivo oficial...");
+            if (SD.exists("/cercas.json")) SD.remove("/cercas.json");
+            SD.rename("/temp_cercas.json", "/cercas.json");
+            Serial.println("📝 Cercas atualizadas com sucesso.");
+          } else {
+            Serial.println("⚠️ JSON de cercas inválido. Mantendo arquivo antigo.");
+          }
+        } else {
+          Serial.println("❌ Erro ao abrir arquivo temporário para cercas.");
+          httpsCercas.end();
+        }
+      }
+
+      // PROCESSAR MOTORISTAS
+      if (motoristasSucesso) {
+        Serial.println("💾 Salvando dados dos motoristas...");
+        File temp = SD.open("/temp_motoristas.json", FILE_WRITE);
+        if (temp) {
+          WiFiClient& stream = httpsMotoristas.getStream();
+          unsigned long inicio = millis();
+          const unsigned long tempoLimite = 10000;
+          bool iniciouJson = false;
+          bool transmissaoAtiva = true;
+
+          while (transmissaoAtiva && (millis() - inicio) < tempoLimite) {
+            if (stream.available()) {
+              char c = stream.read();
+              if (!iniciouJson) {
+                if (c == '[' || c == '{') {
+                  iniciouJson = true;
+                  temp.write(c);
+                }
+              } else {
+                temp.write(c);
+              }
+              inicio = millis();
+            } else {
+              vTaskDelay(100 / portTICK_PERIOD_MS);
+              
+              if (!stream.connected() && stream.available() == 0) {
+                transmissaoAtiva = false;
+                Serial.println("📦 Transmissão de motoristas concluída");
+              }
+            }
+            
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+          }
+
+          temp.flush();
+          temp.close();
+          httpsMotoristas.end();
+          Serial.println("✅ Dados dos motoristas salvos temporariamente");
+
+          if (validarEstruturaJSON("/temp_motoristas.json")) {
+            Serial.println("🧾 JSON de motoristas válido.");
+            if (SD.exists("/motoristas.json")) SD.remove("/motoristas.json");
+            SD.rename("/temp_motoristas.json", "/motoristas.json");
+            Serial.println("📦 Motoristas atualizados com sucesso.");
+          } else {
+            Serial.println("❌ JSON de motoristas inválido.");
+          }
+        } else {
+          Serial.println("❌ Erro ao abrir temp_motoristas.json.");
+          httpsMotoristas.end();
+        }
       }
 
       Serial.println("✅ Atualização assíncrona concluída");
