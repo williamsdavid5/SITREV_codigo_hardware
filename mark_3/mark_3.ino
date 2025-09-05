@@ -113,6 +113,18 @@ const unsigned long INTERVALO_ATUALIZACAO = 5 * 60 * 1000; // 5 minutos
 void taskAtualizacao(void* parameter);
 void iniciarAtualizacaoAssincrona();
 
+// para a logica de envio a API -----------------------------------------
+TaskHandle_t taskEnvioViagensHandle = NULL;
+bool envioViagensAtivo = false;
+// const unsigned long INTERVALO_ENVIO_VIAGENS = 30000; // 30 segundos
+const char* apiRegistrarViagem = "https://telemetria-fvv4.onrender.com/viagens/registrar-viagem";
+
+// Protótipos
+void taskEnvioViagens(void* parameter);
+void iniciarEnvioViagens();
+bool enviarViagemParaAPI(const String& caminhoArquivo);
+
+
 void processarCartao(String uid) {
   if (millis() - ultimaLeituraRFID < DEBOUNCE_RFID) {
     Serial.println("⏰ Debounce RFID: leitura ignorada (muito rápida)");
@@ -384,6 +396,16 @@ void setup() {
   //ja atualiza os dados no inicio do sistema
   proximaAtualizacao = millis() + 10000;
 
+  xTaskCreatePinnedToCore(
+      taskEnvioViagens,
+      "EnvioViagens",
+      4096,
+      NULL,
+      1,
+      &taskEnvioViagensHandle,
+      0
+  );
+
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Iniciando gps...");
@@ -477,6 +499,7 @@ void loop() {
 
             verificarCercas(lat, lng);
             registrarPosicao(lat, lng, vel, chuva);
+            iniciarEnvioViagens();
           }
         }
       }
@@ -511,6 +534,127 @@ void loop() {
     ultimoSave = millis();
     Serial.println("💾 Dados da viagem salvos (auto-salvamento)");
   }
+}
+
+// para o envio das viagens para a API
+bool enviarViagemParaAPI(const String& caminhoArquivo) {
+    File file = SD.open(caminhoArquivo, FILE_READ);
+    if (!file) {
+        Serial.println("❌ Erro ao abrir arquivo para envio");
+        return false;
+    }
+    
+    // Lê todo o conteúdo do arquivo
+    String jsonData;
+    while (file.available()) {
+        jsonData += (char)file.read();
+    }
+    file.close();
+    
+    // 🔥 IMPORTANTE: Completa o JSON antes de enviar (se estiver incompleto)
+    if (!jsonData.endsWith("]}")) {
+        jsonData += "]}"; // Fecha o array de registros e o objeto principal
+        Serial.println("🔧 JSON completado com fechamento");
+    }
+    
+    Serial.print("📊 Tamanho do JSON: ");
+    Serial.print(jsonData.length());
+    Serial.println(" bytes");
+    
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient https;
+    
+    if (https.begin(client, apiRegistrarViagem)) {
+        https.addHeader("Content-Type", "application/json");
+        https.addHeader("User-Agent", "ESP32-Telemetria");
+        
+        Serial.println("🔄 Enviando para API...");
+        int httpCode = https.POST(jsonData);
+        
+        if (httpCode == 200 || httpCode == 201) {
+            Serial.println("✅ Viagem enviada com sucesso!");
+            https.end();
+            
+            // ✅ APENAS LOG - NÃO REMOVE O ARQUIVO!
+            // O sistema principal já cuida disso através da recuperarViagemInterrompida()
+            Serial.println("📋 Arquivo mantido em /pendente para processamento normal");
+            return true;
+        } else {
+            Serial.print("❌ Erro HTTP no envio: ");
+            Serial.println(httpCode);
+            Serial.print("Resposta: ");
+            Serial.println(https.getString());
+            https.end();
+            return false;
+        }
+    } else {
+        Serial.println("❌ Erro ao iniciar conexão HTTP");
+        return false;
+    }
+}
+
+void taskEnvioViagens(void* parameter) {
+    Serial.println("📤 Task de envio de viagens iniciada");
+    
+    for (;;) {
+        if (envioViagensAtivo && WiFi.status() == WL_CONNECTED) {
+            Serial.println("🔍 Verificando viagens pendentes para envio...");
+            
+            File pendenteDir = SD.open("/pendente");
+            if (pendenteDir && pendenteDir.isDirectory()) {
+                bool enviouAlguma = false;
+                
+                while (true) {
+                    File entry = pendenteDir.openNextFile();
+                    if (!entry) break;
+                    
+                    String nomeArquivo = String(entry.name());
+                    entry.close();
+                    
+                    // Ignora diretórios e arquivos que não são .json
+                    if (nomeArquivo.equals(".") || nomeArquivo.equals("..") || 
+                        !nomeArquivo.endsWith(".json")) {
+                        continue;
+                    }
+                    
+                    String caminhoCompleto = "/pendente/" + nomeArquivo;
+                    Serial.print("📨 Tentando enviar: ");
+                    Serial.println(nomeArquivo);
+                    
+                    if (enviarViagemParaAPI(caminhoCompleto)) {
+                        enviouAlguma = true;
+                        Serial.println("✅ Envio bem-sucedido");
+                        // ✅ NÃO REMOVE - o arquivo fica em /pendente para o processamento normal
+                    } else {
+                        Serial.println("❌ Falha no envio, será tentado novamente depois");
+                    }
+                    
+                    // Pequena pausa entre envios
+                    vTaskDelay(1000 / portTICK_PERIOD_MS);
+                }
+                
+                pendenteDir.close();
+                
+                if (!enviouAlguma) {
+                    Serial.println("📭 Nenhuma viagem pendente para enviar");
+                }
+            } else {
+                Serial.println("❌ Erro ao abrir pasta /pendente");
+            }
+            
+            envioViagensAtivo = false;
+        }
+        
+        vTaskDelay(5000 / portTICK_PERIOD_MS); // Verifica a cada 5 segundos
+    }
+}
+
+void iniciarEnvioViagens() {
+    if (WiFi.status() == WL_CONNECTED && !envioViagensAtivo) {
+        envioViagensAtivo = true;
+        Serial.println("📤 Solicitação de envio de viagens ativada");
+    }
 }
 
 // lógicas para motoristas e cercas ------------------------------------------------------------------------
@@ -1100,7 +1244,6 @@ bool dentroDoPoligono(float x, float y, JsonArray coords) {
 }
 
 // Funções para a lógica de registrar as posições --------------------------------------------------
-
 String getTimestamp() {
   if (gps.date.isValid() && gps.time.isValid()) {
     char buffer[25];
@@ -1128,7 +1271,6 @@ unsigned long gerarIdUnico() {
 }
 
 //par recuperar viagens não finalizadas
-
 bool primeiroRegistro = true;
 
 void recuperarViagemInterrompida() {
@@ -1197,7 +1339,6 @@ void recuperarViagemInterrompida() {
   }
 }
 
-
 void iniciarViagem() {
   viagemId = gerarIdUnico();
   nomeArquivoViagem = "/pendente/viagem_" + String(viagemId) + ".json";
@@ -1229,7 +1370,6 @@ void iniciarViagem() {
   Serial.print(nomeArquivoViagem);
   Serial.println(")");
 }
-
 
 void registrarPosicao(float lat, float lng, float vel, bool chuva) {
   if (!viagemAtiva) return;
@@ -1303,6 +1443,7 @@ void encerrarViagem() {
   arquivoViagem.close();
   Serial.println("✅ JSON fechado");
 
+  iniciarEnvioViagens();
   // Mover arquivo
   String novoNome = "/viagens/viagem_" + String(viagemId) + ".json";
   if (SD.rename(nomeArquivoViagem, novoNome)) {
