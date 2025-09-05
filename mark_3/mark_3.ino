@@ -118,6 +118,7 @@ TaskHandle_t taskEnvioViagensHandle = NULL;
 bool envioViagensAtivo = false;
 // const unsigned long INTERVALO_ENVIO_VIAGENS = 30000; // 30 segundos
 const char* apiRegistrarViagem = "https://telemetria-fvv4.onrender.com/viagens/registrar-viagem";
+SemaphoreHandle_t xMutexEnvioViagens = NULL; //para evitar condições de corrida na atualização
 
 // Protótipos
 void taskEnvioViagens(void* parameter);
@@ -396,6 +397,13 @@ void setup() {
   //ja atualiza os dados no inicio do sistema
   proximaAtualizacao = millis() + 10000;
 
+  xMutexEnvioViagens = xSemaphoreCreateMutex();
+  if (xMutexEnvioViagens == NULL) {
+    Serial.println("❌ Falha ao criar mutex para envio de viagens");
+  } else {
+    Serial.println("✅ Mutex para envio de viagens criado");
+  }
+
   xTaskCreatePinnedToCore(
       taskEnvioViagens,
       "EnvioViagens",
@@ -537,10 +545,18 @@ void loop() {
 }
 
 // para o envio das viagens para a API
-bool enviarViagemParaAPI(const String& caminhoArquivo) {
+bool enviarViagemParaAPI(const String& caminhoArquivo, bool moverParaViagens = false) {
+    // Tentar adquirir o mutex com timeout
+    if (xSemaphoreTake(xMutexEnvioViagens, pdMS_TO_TICKS(5000)) == pdFALSE) {
+        Serial.println("❌ Timeout ao adquirir mutex para envio");
+        return false;
+    }
+    
+    bool sucesso = false;
     File file = SD.open(caminhoArquivo, FILE_READ);
     if (!file) {
         Serial.println("❌ Erro ao abrir arquivo para envio");
+        xSemaphoreGive(xMutexEnvioViagens);
         return false;
     }
     
@@ -551,9 +567,9 @@ bool enviarViagemParaAPI(const String& caminhoArquivo) {
     }
     file.close();
     
-    // 🔥 IMPORTANTE: Completa o JSON antes de enviar (se estiver incompleto)
+    // Completa o JSON antes de enviar
     if (!jsonData.endsWith("]}")) {
-        jsonData += "]}"; // Fecha o array de registros e o objeto principal
+        jsonData += "]}";
         Serial.println("🔧 JSON completado com fechamento");
     }
     
@@ -574,24 +590,34 @@ bool enviarViagemParaAPI(const String& caminhoArquivo) {
         
         if (httpCode == 200 || httpCode == 201) {
             Serial.println("✅ Viagem enviada com sucesso!");
-            https.end();
+            sucesso = true;
             
-            // ✅ APENAS LOG - NÃO REMOVE O ARQUIVO!
-            // O sistema principal já cuida disso através da recuperarViagemInterrompida()
-            Serial.println("📋 Arquivo mantido em /pendente para processamento normal");
-            return true;
+            // Se deve mover para a pasta de viagens
+            if (moverParaViagens) {
+                String novoCaminho = "/viagens/" + caminhoArquivo.substring(caminhoArquivo.lastIndexOf('/') + 1);
+                if (SD.rename(caminhoArquivo, novoCaminho)) {
+                    Serial.print("✅ Arquivo movido para: ");
+                    Serial.println(novoCaminho);
+                } else {
+                    Serial.println("❌ Falha ao mover arquivo para /viagens");
+                }
+            } else {
+                Serial.println("📋 Arquivo mantido em /pendente");
+            }
         } else {
             Serial.print("❌ Erro HTTP no envio: ");
             Serial.println(httpCode);
             Serial.print("Resposta: ");
             Serial.println(https.getString());
-            https.end();
-            return false;
         }
+        https.end();
     } else {
         Serial.println("❌ Erro ao iniciar conexão HTTP");
-        return false;
     }
+    
+    // Liberar o mutex
+    xSemaphoreGive(xMutexEnvioViagens);
+    return sucesso;
 }
 
 void taskEnvioViagens(void* parameter) {
@@ -622,10 +648,10 @@ void taskEnvioViagens(void* parameter) {
                     Serial.print("📨 Tentando enviar: ");
                     Serial.println(nomeArquivo);
                     
-                    if (enviarViagemParaAPI(caminhoCompleto)) {
+                    // 🔥 false = NÃO mover, manter em /pendente
+                    if (enviarViagemParaAPI(caminhoCompleto, false)) {
                         enviouAlguma = true;
-                        Serial.println("✅ Envio bem-sucedido");
-                        // ✅ NÃO REMOVE - o arquivo fica em /pendente para o processamento normal
+                        Serial.println("✅ Envio bem-sucedido (mantido em /pendente)");
                     } else {
                         Serial.println("❌ Falha no envio, será tentado novamente depois");
                     }
@@ -843,148 +869,6 @@ void iniciarAtualizacaoAssincrona() {
     Serial.println("🔄 Solicitando atualização assíncrona...");
   }
 }
-
-// void atualizarCercas() {
-//   Serial.println("🔄 Atualizando lista de cercas...");
-//   WiFiClientSecure client;
-//   client.setInsecure();
-//   HTTPClient https;
-
-//   if (https.begin(client, apiURL)) {
-//     https.addHeader("User-Agent", "ESP8266");
-//     https.addHeader("Accept", "application/json");
-//     https.addHeader("Accept-Encoding", "identity");
-//     https.setTimeout(10000); // 10 segundos de espera de resposta da API
-
-
-//     int httpCode = https.GET();
-//     if (httpCode == 200) {
-//       Serial.println("Resposta OK. Salvando no arquivo temporário...");
-
-//       // Salva em arquivo temporário
-//       File temp = SD.open("/temp_cercas.json", FILE_WRITE);
-//       if (temp) {
-//         WiFiClient& stream = https.getStream();
-
-//         unsigned long inicio = millis();
-//         const unsigned long tempoLimite = 10000; // 10 segundos
-//         bool iniciouJson = false;
-
-//         while ((millis() - inicio) < tempoLimite) {
-//           if (stream.available()) {
-//             char c = stream.read();
-
-//             if (!iniciouJson) {
-//               if (c == '[' || c == '{') {
-//                 iniciouJson = true;
-//                 temp.write(c);
-//               }
-//             } else {
-//               temp.write(c);
-//             }
-
-//             inicio = millis(); // Reinicia tempo sempre que lê algo
-//           }
-//         }
-
-//         temp.flush();
-//         temp.close();
-//         Serial.println("✅ Arquivo temporário salvo com sucesso!");
-
-//         if (validarEstruturaJSON("/temp_cercas.json")) {
-//           Serial.println("✅ JSON parece válido! Substituindo arquivo oficial...");
-
-//           if (SD.exists("/cercas.json")) {
-//             SD.remove("/cercas.json");
-//           }
-
-//           SD.rename("/temp_cercas.json", "/cercas.json");
-//           Serial.println("📝 Substituição concluída.");
-//         } else {
-//           Serial.println("⚠️ JSON inválido (estrutura incompleta). Mantendo arquivo antigo.");
-//         }
-
-//       } else {
-//         Serial.println("❌ Erro ao abrir arquivo temporário para escrita.");
-//       }
-//     } else {
-//       Serial.print("⚠️ Falha na requisição. Código HTTP: ");
-//       Serial.println(httpCode);
-//     }
-    
-//     https.end();
-
-//   } else {
-//     Serial.println("❌ Erro ao iniciar conexão HTTPS.");
-//   }
-// }
-
-// void atualizarMotoristas() {
-//   Serial.println("🔄 Atualizando lista de motoristas...");
-//   WiFiClientSecure client;
-//   client.setInsecure();
-//   HTTPClient https;
-
-//   if (https.begin(client, apiMotoristas)) {
-//     https.addHeader("User-Agent", "ESP8266");
-//     https.addHeader("Accept", "application/json");
-//     https.addHeader("Accept-Encoding", "identity");
-//     https.setTimeout(10000);
-
-//     int httpCode = https.GET();
-//     if (httpCode == 200) {
-//       Serial.println("🔄 Baixando motoristas...");
-
-//       File temp = SD.open("/temp_motoristas.json", FILE_WRITE);
-//       if (temp) {
-//         WiFiClient& stream = https.getStream();
-//         unsigned long inicio = millis();
-//         const unsigned long tempoLimite = 10000;
-//         bool iniciouJson = false;
-
-//         while ((millis() - inicio) < tempoLimite) {
-//           if (stream.available()) {
-//             char c = stream.read();
-//             if (!iniciouJson) {
-//               if (c == '[' || c == '{') {
-//                 iniciouJson = true;
-//                 temp.write(c);
-//               }
-//             } else {
-//               temp.write(c);
-//             }
-//             inicio = millis();
-//           }
-//         }
-
-//         temp.flush();
-//         temp.close();
-//         Serial.println("✅ Motoristas temporários salvos.");
-
-//         if (validarEstruturaJSON("/temp_motoristas.json")) {
-//           Serial.println("🧾 JSON de motoristas válido.");
-
-//           if (SD.exists("/motoristas.json")) {
-//             SD.remove("/motoristas.json");
-//           }
-//           SD.rename("/temp_motoristas.json", "/motoristas.json");
-//           Serial.println("📦 motoristas.json atualizado com sucesso.");
-//         } else {
-//           Serial.println("❌ JSON de motoristas inválido.");
-//         }
-
-//       } else {
-//         Serial.println("❌ Erro ao abrir temp_motoristas.json.");
-//       }
-//     } else {
-//       Serial.printf("Erro HTTP: %d\n", httpCode);
-//     }
-
-//     https.end();
-//   } else {
-//     Serial.println("❌ Erro ao iniciar conexão com motoristas.");
-//   }
-// }
 
 void verificarMotoristaPorRFID() {
   File file = SD.open("/motoristas.json");
@@ -1403,7 +1287,6 @@ void encerrarViagem() {
     return;
   }
 
-  // Verificar se o arquivo ainda está aberto e válido
   if (!arquivoViagem) {
     Serial.println("❌ Arquivo de viagem não está aberto");
     viagemAtiva = false;
@@ -1412,7 +1295,6 @@ void encerrarViagem() {
 
   Serial.println("🔄 Finalizando viagem...");
 
-  // Registrar última posição apenas se o GPS estiver ativo
   if (gps.location.isValid()) {
     float lat = gps.location.lat();
     float lng = gps.location.lng();
@@ -1437,24 +1319,21 @@ void encerrarViagem() {
     Serial.println("✅ Última posição registrada");
   }
 
-  // Fechar o JSON
   arquivoViagem.print("]}");
   arquivoViagem.flush();
   arquivoViagem.close();
   Serial.println("✅ JSON fechado");
 
-  iniciarEnvioViagens();
-  // Mover arquivo
-  String novoNome = "/viagens/viagem_" + String(viagemId) + ".json";
-  if (SD.rename(nomeArquivoViagem, novoNome)) {
-    Serial.print("✅ Viagem movida para: ");
-    Serial.println(novoNome);
+  // 🔥 ENVIO DIRETO COM MOVIMENTO PARA /viagens SE BEM-SUCEDIDO
+  Serial.println("🚀 Tentando envio imediato...");
+  if (enviarViagemParaAPI(nomeArquivoViagem, true)) { // true = mover para /viagens
+    Serial.println("🎉 Envio imediato bem-sucedido! Viagem movida para /viagens");
   } else {
-    Serial.print("❌ Erro ao mover, mantendo em: ");
-    Serial.println(nomeArquivoViagem);
+    Serial.println("⏰ Envio falhou, mantendo em /pendente para tentativa posterior");
+    // Apenas ativar a flag para a task de envio processar posteriormente
+    iniciarEnvioViagens();
   }
 
-  // Resetar variáveis
   viagemAtiva = false;
   nomeArquivoViagem = "";
   viagemId = 0;
