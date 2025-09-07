@@ -36,8 +36,17 @@ boolean lcdFlag = false; //flag para controlar a impressão no lcd
 //ajuda a impedir impressão constante desnecessária
 
 // === Wi-Fi e API ===
-const char* ssid = "Duarte_Fotos";
-const char* password = "05519558213";
+// const char* ssid = "Duarte_Fotos";
+// const char* password = "05519558213";
+
+const char* redesWiFi[][2] = {
+  {"Duarte_Fotos", "05519558213"},
+  {"duarte fotos 222", "05519558213"},
+  {"WiFi_Trabalho", "senha_do_trabalho"}
+};
+const int NUM_REDES = sizeof(redesWiFi) / sizeof(redesWiFi[0]);
+int redeAtual = 0;
+
 const char* apiURL = "https://telemetria-fvv4.onrender.com/cercas";
 const char* apiMotoristas = "https://telemetria-fvv4.onrender.com/motoristas/limpo";
 
@@ -202,6 +211,37 @@ void processarCartao(String uid) {
   }
 }
 
+//verifica periodicamente se o wifi está conectado
+void verificarConexaoWiFi() {
+  static unsigned long ultimaVerificacao = 0;
+  const unsigned long intervaloVerificacao = 10000;
+  
+  if (millis() - ultimaVerificacao > intervaloVerificacao) {
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("❌ WiFi desconectado, tentando próxima rede...");
+      
+      redeAtual = (redeAtual + 1) % NUM_REDES;
+      
+      WiFi.disconnect(true);  // true = desligar WiFi completamente
+      delay(2000);           // Dar mais tempo para desconectar
+      
+      // Reiniciar completamente a conexão
+      WiFi.mode(WIFI_OFF);
+      WiFi.mode(WIFI_STA);
+      
+      // Converter para String e depois para char array para garantir
+      String ssidStr = String(redesWiFi[redeAtual][0]);
+      String passStr = String(redesWiFi[redeAtual][1]);
+      
+      WiFi.begin(ssidStr.c_str(), passStr.c_str());
+      
+      Serial.print("Tentando conectar a: ");
+      Serial.println(redesWiFi[redeAtual][0]);
+    }
+    ultimaVerificacao = millis();
+  }
+}
+
 //------------------------------------------------------------------------
 
 void taskRFID(void* parameter) {
@@ -326,8 +366,9 @@ void setup() {
   Serial.println(v, HEX);
 
   // Serial.println("Conectando ao Wi-Fi...");
-  WiFi.begin(ssid, password);
-  unsigned long inicioWifi = millis();
+  // WiFi.begin(ssid, password);
+  WiFi.begin(redesWiFi[redeAtual][0], redesWiFi[redeAtual][1]);
+  // unsigned long inicioWifi = millis();
 
   // Inicia SD no HSPI (pinos 25,26,21,33)
   spiSD.begin(25, 26, 21, SD_CS);
@@ -422,12 +463,13 @@ void setup() {
 //------------------------------------------------------------------------
 
 void loop() {
-
   vel = lerVelocidadePotenciometro();
 
   if (millis() > proximaAtualizacao) {
     iniciarAtualizacaoAssincrona();
   }
+
+  verificarConexaoWiFi();
 
   if (rfidLido) {
 
