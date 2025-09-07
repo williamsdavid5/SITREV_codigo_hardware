@@ -54,6 +54,7 @@ const char* apiMotoristas = "https://telemetria-fvv4.onrender.com/motoristas/lim
 // unsigned long ultimaAtualizacao = 0;
 // const unsigned long intervaloAtualizacao = 5 * 60 * 1000; // 5 minutos
 unsigned long ultimaVerificacaoCercas = 0;
+bool viagensPendentesProcessadas;
 unsigned long intervaloVerificacaoCercas = 15000; // 5 segundos
 
 int vel_max;
@@ -237,6 +238,12 @@ void verificarConexaoWiFi() {
       
       Serial.print("Tentando conectar a: ");
       Serial.println(redesWiFi[redeAtual][0]);
+
+      viagensPendentesProcessadas = false;
+    } else if (WiFi.status() == WL_CONNECTED && !viagensPendentesProcessadas) {
+      //CONEXÃO ESTABELECIDA - ENVIAR VIAGENS PENDENTES
+      enviarViagensPendentes();
+      viagensPendentesProcessadas = true;
     }
     ultimaVerificacao = millis();
   }
@@ -392,27 +399,27 @@ void setup() {
     Serial.println("📁 Diretório /pendente criado");
   }
 
-  // Verificar se há viagens pendentes para recuperar
-  File pendenteDir = SD.open("/pendente");
-  if (pendenteDir && pendenteDir.isDirectory()) {
-      bool temArquivos = false;
-      while (true) {
-          File entry = pendenteDir.openNextFile();
-          if (!entry) break;
-          if (!entry.isDirectory() && String(entry.name()).endsWith(".json")) {
-              temArquivos = true;
-              entry.close();
-              break;
-          }
-          entry.close();
-      }
-      pendenteDir.close();
+  // // Verificar se há viagens pendentes para recuperar
+  // File pendenteDir = SD.open("/pendente");
+  // if (pendenteDir && pendenteDir.isDirectory()) {
+  //     bool temArquivos = false;
+  //     while (true) {
+  //         File entry = pendenteDir.openNextFile();
+  //         if (!entry) break;
+  //         if (!entry.isDirectory() && String(entry.name()).endsWith(".json")) {
+  //             temArquivos = true;
+  //             entry.close();
+  //             break;
+  //         }
+  //         entry.close();
+  //     }
+  //     pendenteDir.close();
       
-      if (temArquivos) {
-          Serial.println("⚠️ Viagens pendentes encontradas. Recuperando...");
-          recuperarViagemInterrompida();
-      }
-  }
+  //     if (temArquivos) {
+  //         Serial.println("⚠️ Viagens pendentes encontradas. Recuperando...");
+  //         recuperarViagemInterrompida();
+  //     }
+  // }
 
   //para o rfid
   xTaskCreatePinnedToCore(
@@ -716,6 +723,66 @@ void taskEnvioViagens(void* parameter) {
         
         vTaskDelay(5000 / portTICK_PERIOD_MS); // Verifica a cada 5 segundos
     }
+}
+
+void enviarViagensPendentes() {
+    Serial.println("📤 Verificando viagens pendentes para envio...");
+    
+    if (!SD.exists("/pendente")) {
+        Serial.println("✅ Nenhuma viagem pendente");
+        return;
+    }
+
+    File pendenteDir = SD.open("/pendente");
+    if (!pendenteDir || !pendenteDir.isDirectory()) {
+        Serial.println("❌ Erro ao abrir pasta /pendente");
+        return;
+    }
+
+    int viagensEnviadas = 0;
+    int viagensFalhas = 0;
+    
+    while (true) {
+        File entry = pendenteDir.openNextFile();
+        if (!entry) break;
+        
+        String nomeArquivo = String(entry.name());
+        entry.close();
+        
+        if (nomeArquivo.equals(".") || nomeArquivo.equals("..") || 
+            !nomeArquivo.endsWith(".json")) {
+            continue;
+        }
+
+        String caminhoCompleto = "/pendente/" + nomeArquivo;
+        
+        // Verificar se é a viagem atual em andamento
+        if (viagemAtiva && nomeArquivoViagem.equals(caminhoCompleto)) {
+            Serial.print("⏩ Pulando viagem em andamento: ");
+            Serial.println(nomeArquivo);
+            continue;
+        }
+
+        Serial.print("📨 Tentando enviar: ");
+        Serial.println(nomeArquivo);
+        
+        if (enviarViagemParaAPI(caminhoCompleto, true)) {
+            viagensEnviadas++;
+            Serial.println("✅ Envio bem-sucedido");
+        } else {
+            viagensFalhas++;
+            Serial.println("❌ Falha no envio, mantendo em /pendente");
+        }
+        delay(1000);
+    }
+    
+    pendenteDir.close();
+
+    Serial.print("📊 Resumo do envio: ");
+    Serial.print(viagensEnviadas);
+    Serial.print(" enviadas, ");
+    Serial.print(viagensFalhas);
+    Serial.println(" falhas");
 }
 
 void iniciarEnvioViagens() {
