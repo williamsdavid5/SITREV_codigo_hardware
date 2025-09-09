@@ -10,6 +10,7 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <MFRC522.h>
+#include <ELMo.h>
 
 // === Cartão SD ===
 #define SD_CS 33
@@ -122,6 +123,9 @@ const unsigned long INTERVALO_ATUALIZACAO = 5 * 60 * 1000; // 5 minutos
 //prototipos
 void taskAtualizacao(void* parameter);
 void iniciarAtualizacaoAssincrona();
+//mutex que evita condições de corrida
+//bloqueia acesso na verificação e atualização ao mesmo tempo
+SemaphoreHandle_t xMutexCercas = NULL;
 
 // para a logica de envio a API -----------------------------------------
 TaskHandle_t taskEnvioViagensHandle = NULL;
@@ -444,6 +448,7 @@ void setup() {
   );
   //ja atualiza os dados no inicio do sistema
   proximaAtualizacao = millis() + 10000;
+  xMutexCercas = xSemaphoreCreateMutex();
 
   xMutexEnvioViagens = xSemaphoreCreateMutex();
   if (xMutexEnvioViagens == NULL) {
@@ -452,6 +457,7 @@ void setup() {
     Serial.println("✅ Mutex para envio de viagens criado");
   }
 
+  //para enviar as viagens para a API sem atrasar o processamento
   xTaskCreatePinnedToCore(
       taskEnvioViagens,
       "EnvioViagens",
@@ -895,14 +901,26 @@ void taskAtualizacao(void* parameter) {
           httpsCercas.end();
           Serial.println("✅ Dados das cercas salvos temporariamente");
 
-          if (validarEstruturaJSON("/temp_cercas.json")) {
-            Serial.println("✅ JSON de cercas válido! Substituindo arquivo oficial...");
-            if (SD.exists("/cercas.json")) SD.remove("/cercas.json");
-            SD.rename("/temp_cercas.json", "/cercas.json");
-            Serial.println("📝 Cercas atualizadas com sucesso.");
+          if (xSemaphoreTake(xMutexCercas, portMAX_DELAY)) {
+              if (validarEstruturaJSON("/temp_cercas.json")) {
+                  Serial.println("✅ JSON de cercas válido! Substituindo arquivo oficial...");
+                  if (SD.exists("/cercas.json")) SD.remove("/cercas.json");
+                  SD.rename("/temp_cercas.json", "/cercas.json");
+                  Serial.println("📝 Cercas atualizadas com sucesso.");
+              }
+              xSemaphoreGive(xMutexCercas);
           } else {
             Serial.println("⚠️ JSON de cercas inválido. Mantendo arquivo antigo.");
           }
+
+          // if (validarEstruturaJSON("/temp_cercas.json")) {
+          //   Serial.println("✅ JSON de cercas válido! Substituindo arquivo oficial...");
+          //   if (SD.exists("/cercas.json")) SD.remove("/cercas.json");
+          //   SD.rename("/temp_cercas.json", "/cercas.json");
+          //   Serial.println("📝 Cercas atualizadas com sucesso.");
+          // } else {
+          //   Serial.println("⚠️ JSON de cercas inválido. Mantendo arquivo antigo.");
+          // }
         } else {
           Serial.println("❌ Erro ao abrir arquivo temporário para cercas.");
           httpsCercas.end();
@@ -1117,107 +1135,112 @@ bool carregarUltimoLimite() {
 }
 
 void verificarCercas(float lat, float lng) {
-  File file = SD.open("/cercas.json");
-  if (!file) {
-    Serial.println("Erro ao abrir cercas.json");
-    return;
-  }
 
-  // Verifica se o JSON começa com [
-  char c;
-  do {
-    c = file.read();
-  } while (c != -1 && isspace(c)); // ignora espaços
-
-  if (c != '[') {
-    Serial.println("Formato inválido: JSON não começa com [");
-    file.close();
-    return;
-  }
-
-  StaticJsonDocument<1024> doc;
-  bool encontrouAlguma = false;
-
-  int menorVelMax = 999;         // Inicializa com valor alto
-  int menorVelChuva = 999;
-  const char* nomeMaisRestrito = nullptr;
-
-  while (file.available()) {
-    DeserializationError err = deserializeJson(doc, file);
-    if (err) {
-      Serial.print("Erro ao parsear objeto JSON: ");
-      Serial.println(err.c_str());
-      break;
+  if (xSemaphoreTake(xMutexCercas, pdMS_TO_TICKS(1000))) {
+    File file = SD.open("/cercas.json");
+    if (!file) {
+      Serial.println("Erro ao abrir cercas.json");
+      return;
     }
 
-    JsonObject cerca = doc.as<JsonObject>();
-    const char* nome = cerca["nome"];
-    Serial.print("Verificando: ");
-    Serial.println(nome);
-    const char* velMaxStr = cerca["velocidade_max"];
-    const char* velChuvaStr = cerca["velocidade_chuva"];
-    JsonArray coords = cerca["coordenadas"];
+    // Verifica se o JSON começa com [
+    char c;
+    do {
+      c = file.read();
+    } while (c != -1 && isspace(c)); // ignora espaços
 
-    if (dentroDoPoligono(lat, lng, coords)) {
-      int vel = atoi(velMaxStr);
-      int velChuva = atoi(velChuvaStr);
-
-      Serial.println("🛑 Dentro de uma cerca:");
-      Serial.print("📍 Nome: "); Serial.println(nome);
-      Serial.print("🚗 Limite: "); Serial.print(vel); Serial.println(" km/h");
-
-      if (vel < menorVelMax) {
-        menorVelMax = vel;
-        menorVelChuva = velChuva;
-        nomeMaisRestrito = nome;
-        encontrouAlguma = true;
-      }
+    if (c != '[') {
+      Serial.println("Formato inválido: JSON não começa com [");
+      file.close();
+      return;
     }
 
-    bool terminou = false;
+    StaticJsonDocument<1024> doc;
+    bool encontrouAlguma = false;
+
+    int menorVelMax = 999;         // Inicializa com valor alto
+    int menorVelChuva = 999;
+    const char* nomeMaisRestrito = nullptr;
+
     while (file.available()) {
-      char next = file.peek();
-      if (next == ',') {
-        file.read(); // consome vírgula
-        break;
-      } else if (isspace(next)) {
-        file.read(); // consome espaço
-      } else if (next == ']') {
-        file.read(); // fim do array
-        terminou = true;
-        break;
-      } else {
+      DeserializationError err = deserializeJson(doc, file);
+      if (err) {
+        Serial.print("Erro ao parsear objeto JSON: ");
+        Serial.println(err.c_str());
         break;
       }
+
+      JsonObject cerca = doc.as<JsonObject>();
+      const char* nome = cerca["nome"];
+      Serial.print("Verificando: ");
+      Serial.println(nome);
+      const char* velMaxStr = cerca["velocidade_max"];
+      const char* velChuvaStr = cerca["velocidade_chuva"];
+      JsonArray coords = cerca["coordenadas"];
+
+      if (dentroDoPoligono(lat, lng, coords)) {
+        int vel = atoi(velMaxStr);
+        int velChuva = atoi(velChuvaStr);
+
+        Serial.println("🛑 Dentro de uma cerca:");
+        Serial.print("📍 Nome: "); Serial.println(nome);
+        Serial.print("🚗 Limite: "); Serial.print(vel); Serial.println(" km/h");
+
+        if (vel < menorVelMax) {
+          menorVelMax = vel;
+          menorVelChuva = velChuva;
+          nomeMaisRestrito = nome;
+          encontrouAlguma = true;
+        }
+      }
+
+      bool terminou = false;
+      while (file.available()) {
+        char next = file.peek();
+        if (next == ',') {
+          file.read(); // consome vírgula
+          break;
+        } else if (isspace(next)) {
+          file.read(); // consome espaço
+        } else if (next == ']') {
+          file.read(); // fim do array
+          terminou = true;
+          break;
+        } else {
+          break;
+        }
+      }
+
+      if (terminou) break;
+
+      doc.clear(); // limpa doc para o próximo
     }
 
-    if (terminou) break;
+    file.close();
 
-    doc.clear(); // limpa doc para o próximo
-  }
+    if (encontrouAlguma) {
+      vel_max = menorVelMax;
+      vel_max_chuva = menorVelChuva;
 
-  file.close();
+      lcd.clear();
+      // lcd.setCursor(0, 0);
+      // lcd.print(String(nomeMaisRestrito).substring(0, 16));
 
-  if (encontrouAlguma) {
-    vel_max = menorVelMax;
-    vel_max_chuva = menorVelChuva;
+      lcd.setCursor(0, 1);
+      lcd.print("Limite: ");
+      lcd.print(vel_max);
+      lcd.print("km/h");
 
-    lcd.clear();
-    // lcd.setCursor(0, 0);
-    // lcd.print(String(nomeMaisRestrito).substring(0, 16));
-
-    lcd.setCursor(0, 1);
-    lcd.print("Limite: ");
-    lcd.print(vel_max);
-    lcd.print("km/h");
-
-    //para definir se estpa chovendo futuramente usando o sensor
-    chuva = false;
+      //para definir se estpa chovendo futuramente usando o sensor
+      chuva = false;
+    } else {
+      Serial.println("📭 Fora de qualquer cerca.");
+      lcd.clear();
+      lcd.setCursor(0, 1);
+      lcd.print("Fora de qualquer cerca");
+    }
   } else {
-    Serial.println("📭 Fora de qualquer cerca.");
-    lcd.clear();
-    lcd.setCursor(0, 1);
-    lcd.print("Fora de qualquer cerca");
+    Serial.println("❌ Timeout ao acessar arquivo de cercas");
   }
 }
 
