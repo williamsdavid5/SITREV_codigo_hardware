@@ -448,7 +448,13 @@ void setup() {
   );
   //ja atualiza os dados no inicio do sistema
   proximaAtualizacao = millis() + 10000;
+
   xMutexCercas = xSemaphoreCreateMutex();
+  if (xMutexCercas == NULL) {
+    Serial.println("❌ Falha ao criar mutex para cercas");
+  } else {
+    Serial.println("✅ Mutex para cercas criado");
+  }
 
   xMutexEnvioViagens = xSemaphoreCreateMutex();
   if (xMutexEnvioViagens == NULL) {
@@ -907,10 +913,13 @@ void taskAtualizacao(void* parameter) {
                   if (SD.exists("/cercas.json")) SD.remove("/cercas.json");
                   SD.rename("/temp_cercas.json", "/cercas.json");
                   Serial.println("📝 Cercas atualizadas com sucesso.");
+              } else {
+                Serial.println("⚠️ JSON de cercas inválido. Mantendo arquivo antigo.");
               }
               xSemaphoreGive(xMutexCercas);
+              
           } else {
-            Serial.println("⚠️ JSON de cercas inválido. Mantendo arquivo antigo.");
+            Serial.println("❌ Falha ao adquirir mutex para atualização de cercas");
           }
 
           // if (validarEstruturaJSON("/temp_cercas.json")) {
@@ -1239,6 +1248,8 @@ void verificarCercas(float lat, float lng) {
       lcd.setCursor(0, 1);
       lcd.print("Fora de qualquer cerca");
     }
+
+    xSemaphoreGive(xMutexCercas);
   } else {
     Serial.println("❌ Timeout ao acessar arquivo de cercas");
   }
