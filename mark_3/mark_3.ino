@@ -491,7 +491,6 @@ void loop() {
   verificarConexaoWiFi();
 
   if (rfidLido) {
-
     if (rfidLido && lcdFlag) {
       delay(50);
       lcd.clear();
@@ -506,6 +505,7 @@ void loop() {
       lcdFlag = false;
     }
 
+    // caso o GPS não esteja funcionando ---------------------------
     if (!gpsAtivo && !limiteCarregadoOffline) {
       if (carregarUltimoLimite()) {
         lcd.clear();
@@ -522,6 +522,33 @@ void loop() {
       }
     }
 
+    //caso o gps esteja funcionando --------------------------------
+    while (gpsSerial.available()) {
+      gps.encode(gpsSerial.read());
+
+      if (gps.location.isValid()) {
+        gpsAtivo = true;
+
+        float lat = gps.location.lat();
+        float lng = gps.location.lng();
+        // float vel = gps.speed.kmph(); // velocidade do obd2
+
+        if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
+
+          if (!alertaVelocidade || (alertaVelocidade && millis() - inicioAlerta > TOLERANCIA_ALERTA)) {
+            Serial.print("Lat: "); Serial.println(lat, 6);
+            Serial.print("Lng: "); Serial.println(lng, 6);
+            ultimaVerificacaoCercas = millis();
+
+            verificarCercas(lat, lng);
+            registrarPosicao(lat, lng, vel, chuva);
+            iniciarEnvioViagens();
+          }
+        }
+      }
+    }
+
+    // lógica para alertas de velocidade -------------------------------
     int limiteAtual = chuva ? vel_max_chuva : vel_max;
 
     if (vel > limiteAtual && !alertaVelocidade) {
@@ -549,31 +576,7 @@ void loop() {
       Serial.println("↩️ Intervalo restaurado para 15s");
     }
 
-    while (gpsSerial.available()) {
-      gps.encode(gpsSerial.read());
-
-      if (gps.location.isUpdated()) {
-        gpsAtivo = true;
-
-        float lat = gps.location.lat();
-        float lng = gps.location.lng();
-        // float vel = gps.speed.kmph(); // velocidade do obd2
-
-        if (millis() - ultimaVerificacaoCercas > intervaloVerificacaoCercas) {
-
-          if (!alertaVelocidade || (alertaVelocidade && millis() - inicioAlerta > TOLERANCIA_ALERTA)) {
-            Serial.print("Lat: "); Serial.println(lat, 6);
-            Serial.print("Lng: "); Serial.println(lng, 6);
-            ultimaVerificacaoCercas = millis();
-
-            verificarCercas(lat, lng);
-            registrarPosicao(lat, lng, vel, chuva);
-            iniciarEnvioViagens();
-          }
-        }
-      }
-    }
-
+    //imprime a velocidade atual em tempo real para debug
     if (millis() - ultimaImpressaoVel > 500) {
       lcd.setCursor(0, 0); 
       lcd.print("                ");
